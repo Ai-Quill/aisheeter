@@ -27,7 +27,7 @@ export const Navbar: React.FC<NavbarProps> = ({ show }) => {
         <div className="flex items-center gap-3">
             {/* GitHub Link */}
             <motion.a 
-                href="https://github.com/Ai-Quill/ai-sheeter" 
+                href="https://github.com/Ai-Quill/aisheeter" 
                 target="_blank"
                 rel="noopener noreferrer"
                 whileHover={{ scale: 1.05 }}
@@ -41,7 +41,7 @@ export const Navbar: React.FC<NavbarProps> = ({ show }) => {
             
             {/* Mobile GitHub Icon */}
             <a 
-                href="https://github.com/Ai-Quill/ai-sheeter" 
+                href="https://github.com/Ai-Quill/aisheeter" 
                 target="_blank"
                 rel="noopener noreferrer"
                 className="md:hidden flex items-center justify-center w-10 h-10 bg-white/90 backdrop-blur-md rounded-full border border-gray-200"

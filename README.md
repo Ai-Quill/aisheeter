@@ -86,7 +86,7 @@ AISheeter is a Google Sheets add-on that connects your spreadsheet to any major 
 
 ```bash
 # Clone the repo
-git clone https://github.com/Ai-Quill/aisheeter-opensource.git
+git clone https://github.com/Ai-Quill/aisheeter.git
 cd aisheeter-opensource/backend
 
 # Install dependencies
@@ -106,7 +106,7 @@ npm run dev
 
 **Deploy to Vercel** (recommended for production):
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/Ai-Quill/aisheeter-opensource/tree/main/backend)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/Ai-Quill/aisheeter/tree/main/backend)
 
 ### 2. Deploy the Frontend
 
@@ -258,7 +258,7 @@ MIT License. See [LICENSE](LICENSE).
 </p>
 
 <p align="center">
-  <a href="https://github.com/Ai-Quill/aisheeter-opensource/stargazers">Star on GitHub</a> &middot;
+  <a href="https://github.com/Ai-Quill/aisheeter/stargazers">Star on GitHub</a> &middot;
   <a href="https://www.aisheeter.com">Website</a> &middot;
   <a href="https://workspace.google.com/marketplace/app/aisheeter_smarter_google_sheets_with_any/272111525853">Install Full Version</a>
 </p>

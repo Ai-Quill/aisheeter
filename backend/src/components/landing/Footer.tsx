@@ -15,7 +15,7 @@ export const Footer: React.FC = () => {
                     
                     {/* Open Source Badge */}
                     <a 
-                        href="https://github.com/Ai-Quill/ai-sheeter" 
+                        href="https://github.com/Ai-Quill/aisheeter" 
                         target="_blank"
                         rel="noopener noreferrer"
                         className="inline-flex items-center gap-3 px-5 py-3 bg-[#023047] text-white rounded-2xl hover:bg-[#034a6e] transition-all group shadow-lg hover:shadow-xl"
@@ -47,7 +47,7 @@ export const Footer: React.FC = () => {
                         </li>
                         <li>
                             <a 
-                                href="https://github.com/Ai-Quill/ai-sheeter" 
+                                href="https://github.com/Ai-Quill/aisheeter" 
                                 target="_blank" 
                                 rel="noopener noreferrer" 
                                 className="hover:text-[#219EBB] transition flex items-center gap-2"
@@ -74,7 +74,7 @@ export const Footer: React.FC = () => {
                 </p>
                 <div className="flex items-center gap-5 mt-4 md:mt-0">
                     <a 
-                        href="https://github.com/Ai-Quill/ai-sheeter" 
+                        href="https://github.com/Ai-Quill/aisheeter" 
                         target="_blank" 
                         rel="noopener noreferrer"
                         className="flex items-center gap-1.5 hover:text-[#023047] transition-colors"
