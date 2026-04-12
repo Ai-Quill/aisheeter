@@ -1,0 +1,357 @@
+<!--
+  @file Sidebar_Agent_TaskChain_UI.html
+  @version 1.0.0
+  @created 2026-02-05
+  
+  TASK CHAIN - UI Rendering Module
+  
+  Contains:
+  - Parsing progress UI
+  - Chain confirmation UI
+  - Progress visualization
+  - Suggested actions UI
+  
+  Depends on: Sidebar_Agent_TaskChain_State.html, Sidebar_Agent_TaskChain_Validation.html
+-->
+
+<script>
+// ============================================
+// PARSING PROGRESS UI
+// ============================================
+
+/**
+ * Show enhanced parsing progress indicator
+ * @param {string} initialText - Initial progress text
+ */
+function showParsingProgress(initialText) {
+  if (typeof showThinkingIndicator === 'function') {
+    showThinkingIndicator(window.selectedModel || '', initialText || 'Planning workflow...');
+  }
+}
+
+/**
+ * Update parsing progress text
+ * @param {string} text - New progress text
+ */
+function updateParsingProgress(text) {
+  const progressText = document.getElementById('parsingProgressText');
+  if (progressText) {
+    progressText.textContent = text;
+    progressText.classList.add('transition-all');
+  }
+}
+
+/**
+ * Remove parsing progress indicator
+ */
+function removeParsingProgress() {
+  if (typeof hideThinkingIndicator === 'function') {
+    hideThinkingIndicator();
+  }
+  // Fallback: remove any legacy thinking elements
+  const thinkingMsg = document.querySelector('[data-type="thinking"]');
+  if (thinkingMsg) thinkingMsg.remove();
+}
+
+// ============================================
+// CHAIN CONFIRMATION UI
+// ============================================
+
+/**
+ * Render the chain confirmation UI
+ * Shows user the detected steps and asks for confirmation
+ * 
+ * @param {Object} chain - Parsed task chain
+ */
+function renderChainConfirmation(chain) {
+  // Display in messages area instead of separate modal
+  const messagesDiv = document.getElementById('agentMessages');
+  if (!messagesDiv) return;
+  
+  const stepsHtml = chain.steps.map((step, idx) => `
+    <div class="timeline-step">
+      <div class="timeline-dot"></div>
+      ${idx < chain.steps.length - 1 ? '<div class="timeline-line"></div>' : ''}
+      <div class="timeline-content">
+        <span class="timeline-action">${getActionIcon(step.action)}</span>
+        <span class="timeline-desc">${escapeHtml(step.description)}</span>
+        <span class="timeline-meta">${step.inputColumns?.join(',') || ''}</span>
+      </div>
+    </div>
+  `).join('');
+  
+  const html = `
+    <div class="workflow-card" data-type="chain-confirmation">
+      <div class="workflow-accent"></div>
+      <p class="workflow-summary">${escapeHtml(chain.summary || 'Ready to execute the following steps:')}</p>
+      
+      <div class="workflow-timeline">
+        ${stepsHtml}
+      </div>
+      
+      <label class="flex items-center gap-2 mb-2 cursor-pointer">
+        <input type="checkbox" id="addHeadersCheckbox" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500" checked>
+        <span class="text-[11px] text-gray-600">Add column headers</span>
+      </label>
+      
+      <div class="workflow-actions">
+        <button onclick="executeChain()" class="workflow-run-btn" id="runChainBtn">&#x25B6; Run</button>
+        <button onclick="cancelChain()" class="workflow-cancel-btn" id="cancelChainBtn">Cancel</button>
+      </div>
+    </div>
+  `;
+  
+  messagesDiv.insertAdjacentHTML('beforeend', html);
+  autoScrollMessages();
+}
+
+/**
+ * Render proposed workflow UI
+ * Special UI when AI understands user's problem and proposes a solution
+ * 
+ * @param {Object} result - AI analysis result with proposed steps
+ */
+function renderProposedWorkflow(result) {
+  const messagesDiv = document.getElementById('agentMessages');
+  if (!messagesDiv) return;
+  
+  // Sheet actions that don't have input/output column flow
+  const sheetActions = ['format', 'filter', 'chart', 'conditionalFormat', 'dataValidation', 'sheetOps', 'writeData', 'table'];
+  
+  // Build timeline steps with column metadata
+  const stepsHtml = result.steps.map((step, idx) => {
+    let colMeta = '';
+    const isSheetAction = sheetActions.includes(step.action);
+    
+    if (step.action === 'analyze') {
+      colMeta = 'Chat';
+    } else if (isSheetAction) {
+      const range = step.range || step.config?.range || '';
+      colMeta = range || '';
+    } else {
+      const inputCols = step.inputColumns?.join(',') || result.inputColumn || '?';
+      const outputCol = step.outputColumn || (result.inputColumns ? result.inputColumns[0] : '?');
+      colMeta = `${inputCols}→${outputCol}`;
+    }
+    
+    return `
+    <div class="timeline-step" data-step-idx="${idx}">
+      <div class="timeline-dot"></div>
+      ${idx < result.steps.length - 1 ? '<div class="timeline-line"></div>' : ''}
+      <div class="timeline-content">
+        <span class="timeline-action">${getActionIcon(step.action)}</span>
+        <span class="timeline-desc">${escapeHtml(step.description)}</span>
+        ${colMeta ? `<span class="timeline-meta">${colMeta}</span>` : ''}
+      </div>
+    </div>
+  `;
+  }).join('');
+  
+  const html = `
+    <div class="workflow-card" data-type="chain-confirmation">
+      <div class="workflow-accent"></div>
+      <p class="workflow-summary">${escapeHtml(result.summary)}</p>
+      
+      <div class="workflow-timeline">
+        ${stepsHtml}
+      </div>
+      
+      <label class="flex items-center gap-2 mb-2 cursor-pointer">
+        <input type="checkbox" id="addHeadersCheckbox" class="rounded border-gray-300 text-emerald-600 focus:ring-emerald-500" checked>
+        <span class="text-[11px] text-gray-600">Add column headers</span>
+      </label>
+      
+      <div class="workflow-actions">
+        <button onclick="executeChain()" class="workflow-run-btn" id="runChainBtn">&#x25B6; Run</button>
+        <button onclick="cancelChain()" class="workflow-cancel-btn" id="cancelChainBtn">Cancel</button>
+      </div>
+    </div>
+  `;
+  
+  messagesDiv.insertAdjacentHTML('beforeend', html);
+  autoScrollMessages();
+}
+
+// ============================================
+// CHAIN PROGRESS UI
+// ============================================
+
+/**
+ * Render the chain progress UI
+ * 
+ * @param {Object} chain - Task chain
+ */
+function renderChainProgress(chain) {
+  const messagesDiv = document.getElementById('agentMessages');
+  if (!messagesDiv) return;
+  
+  // CRITICAL: Before creating new progress elements, invalidate IDs from
+  // any previous chain progress containers to avoid duplicate ID conflicts.
+  // When multiple chains run in a session, getElementById would return the
+  // FIRST matching element (from an old chain) instead of the current one.
+  document.querySelectorAll('[data-type="chain-progress"]').forEach(function(oldContainer) {
+    // Strip IDs from old container and all its children
+    oldContainer.removeAttribute('id');
+    oldContainer.querySelectorAll('[id]').forEach(function(el) {
+      el.removeAttribute('id');
+    });
+  });
+  
+  const stepsHtml = chain.steps.map((step, idx) => `
+    <div class="chain-step" id="chain-step-${idx}">
+      <div class="chain-step-dot chain-step-pending" id="chain-step-dot-${idx}"></div>
+      ${idx < chain.steps.length - 1 ? '<div class="chain-step-connector"></div>' : ''}
+      <span class="chain-step-desc">${escapeHtml(step.description)}</span>
+      <span class="chain-step-time" id="chain-step-time-${idx}"></span>
+    </div>
+  `).join('');
+  
+  const html = `
+    <div class="chain-progress" data-type="chain-progress" id="chainProgressContainer">
+      <div class="chain-progress-header" id="chainProgressHeader">
+        <div class="chain-progress-spinner" id="chainProgressSpinner"></div>
+        <span class="chain-progress-title" id="chainProgressTitle">Running...</span>
+      </div>
+      <div class="chain-progress-steps">
+        ${stepsHtml}
+      </div>
+      <div class="chain-progress-status" id="chainProgressStatus">Starting...</div>
+    </div>
+  `;
+  
+  messagesDiv.insertAdjacentHTML('beforeend', html);
+  autoScrollMessages();
+}
+
+/**
+ * Update chain progress UI
+ * 
+ * @param {Object} chainState - Current chain state
+ */
+function updateChainProgress(chainState) {
+  if (!chainState || !chainState.steps) return;
+  
+  chainState.steps.forEach((step, idx) => {
+    const dot = document.getElementById(`chain-step-dot-${idx}`);
+    if (!dot) return;
+    
+    // Remove all state classes
+    dot.classList.remove('chain-step-pending', 'chain-step-running', 'chain-step-completed', 'chain-step-error');
+    
+    if (step.status === 'completed' || step.status === 'skipped') {
+      dot.classList.add('chain-step-completed');
+    } else if (step.status === 'running') {
+      dot.classList.add('chain-step-running');
+    } else if (step.status === 'error' || step.status === 'failed') {
+      dot.classList.add('chain-step-error');
+    } else {
+      dot.classList.add('chain-step-pending');
+    }
+  });
+  
+  // Update overall status
+  const statusEl = document.getElementById('chainProgressStatus');
+  if (statusEl && chainState.currentStep !== undefined) {
+    const completed = chainState.steps.filter(s => s.status === 'completed' || s.status === 'skipped').length;
+    const failed = chainState.steps.filter(s => s.status === 'error' || s.status === 'failed').length;
+    if (failed > 0) {
+      statusEl.textContent = `Step ${completed}/${chainState.totalSteps} completed, ${failed} failed`;
+    } else {
+      statusEl.textContent = `Step ${completed}/${chainState.totalSteps} completed`;
+    }
+  }
+  
+  // Auto-scroll to keep progress visible
+  autoScrollMessages();
+  
+  // Check for completion
+  const allDone = chainState.steps.every(s => s.status === 'completed' || s.status === 'skipped' || s.status === 'error' || s.status === 'failed');
+  if (allDone) {
+    const container = document.getElementById('chainProgressContainer');
+    if (container) {
+      container.classList.add('chain-complete');
+    }
+    const titleEl = document.getElementById('chainProgressTitle');
+    if (titleEl) {
+      const hasErrors = chainState.steps.some(s => s.status === 'error' || s.status === 'failed');
+      titleEl.textContent = hasErrors ? 'Completed with errors' : 'Complete';
+    }
+  }
+}
+
+// ============================================
+// SUGGESTED ACTIONS UI
+// ============================================
+
+/**
+ * Render suggested actions using the unified TaskChain confirmation pattern
+ * Converts suggestions to a selectable multi-step format
+ * 
+ * @param {Array} actions - Array of { label, command } objects
+ */
+function renderSuggestedActions(actions) {
+  const messagesDiv = document.getElementById('agentMessages');
+  if (!messagesDiv) return;
+  
+  const actionsHtml = actions.slice(0, 3).map((action, idx) => `
+    <button class="suggestion-row" onclick="executeNextAction('${escapeHtml(action.command)}', '${escapeHtml(action.label)}')">
+      <span class="suggestion-label">${escapeHtml(action.label)}</span>
+      <span class="suggestion-cta">Run &rarr;</span>
+    </button>
+  `).join('');
+  
+  const moreHtml = actions.length > 3 ? `
+    <button class="suggestion-more" onclick="showMoreSuggestions()">+${actions.length - 3} more</button>
+  ` : '';
+  
+  const html = `
+    <div class="suggestions-card" data-type="suggested-actions">
+      <div class="suggestions-header">
+        <span class="suggestions-icon">&rarr;</span>
+        <span class="suggestions-title">Next steps</span>
+      </div>
+      <div class="suggestions-list">
+        ${actionsHtml}
+        ${moreHtml}
+      </div>
+    </div>
+  `;
+  
+  messagesDiv.insertAdjacentHTML('beforeend', html);
+  autoScrollMessages();
+}
+
+/**
+ * Execute a single suggested action directly
+ */
+function executeNextAction(command, label) {
+  // Remove suggestions card 
+  dismissSuggestedActions();
+  // Submit the command as if user typed it
+  if (typeof processAgentCommand === 'function') {
+    processAgentCommand(command);
+  }
+}
+
+/**
+ * Show remaining suggestions (expand the list)
+ */
+function showMoreSuggestions() {
+  // Find the suggestions card and re-render with all items
+  const card = document.querySelector('[data-type="suggested-actions"]');
+  if (!card) return;
+  // Just remove the "more" button and show all
+  const moreBtn = card.querySelector('.suggestion-more');
+  if (moreBtn) moreBtn.remove();
+}
+
+/**
+ * Dismiss the suggested actions UI
+ */
+function dismissSuggestedActions() {
+  const suggestedEl = document.querySelector('[data-type="suggested-actions"]');
+  if (suggestedEl) suggestedEl.remove();
+}
+
+console.log('📦 Agent TaskChain UI module loaded');
+</script>

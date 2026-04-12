@@ -1,0 +1,16 @@
+{
+  "name": "AISheeter",
+  "short_name": "AISheeter",
+  "description": "Smarter Google Sheets with AI – multi-step workflows, conversation memory, and 10 specialized skills.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#FAFAFA",
+  "theme_color": "#023047",
+  "icons": [
+    {
+      "src": "/images/logo.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    }
+  ]
+}

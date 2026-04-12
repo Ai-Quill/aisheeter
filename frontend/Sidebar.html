@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<!--
+  @file Sidebar.html
+  @version 2.3.0
+  @updated 2026-01-10
+  @author AISheeter Team
+  
+  CHANGELOG:
+  - 2.3.0 (2026-01-10): Added AI Agent tab (chat interface)
+  - 2.2.0 (2026-01-10): Modular architecture (split into 5 files)
+  - 2.1.0 (2026-01-10): Best-in-class bulk processing
+  - 2.0.0 (2026-01-09): shadcn-inspired design system
+  
+  ============================================
+  SIDEBAR.html - Main Orchestrator
+  ============================================
+  
+  AISheeter Google Sheets Add-on Sidebar
+  
+  This is the main entry point that orchestrates 
+  all modular components. It contains only:
+  - Head (imports modules)
+  - Body structure (header, tabs, content, menu)
+  
+  Module Architecture:
+  ┌─────────────────────────────────────────────────┐
+  │  Sidebar.html (this file)                       │
+  │  └─ Sidebar_Styles.html       - CSS styles      │
+  │  └─ Sidebar_Utils.html        - Core utilities  │
+  │  └─ Sidebar_i18n.html         - Multi-language  │
+  │  └─ Sidebar_Agent.html        - Agent CSS       │
+  │     └─ Sidebar_Agent_Core.html      - State     │
+  │     └─ Sidebar_Agent_UI.html        - UI        │
+  │     └─ Sidebar_Agent_Parsing.html   - Parsing   │
+  │     └─ Sidebar_Agent_Execution.html - Execution │
+  │     └─ Sidebar_Agent_TaskChain_*.html (7 modules)│
+  │        - State, Context, Validation, UI         │
+  │        - Execution, Parsing, Suggestions        │
+  │     └─ Sidebar_Agent_Suggestions.html - Proactive│
+  │     └─ Sidebar_Agent_Context.html   - Context   │
+  │     └─ Sidebar_Agent_Help.html      - Help      │
+  │     └─ Sidebar_Agent_Templates.html - Templates │
+  │     └─ Sidebar_Agent_PatternLearning.html - Patterns │
+  │  └─ Sidebar_Bulk.html         - Bulk Processing │
+  │  └─ Sidebar_Settings.html     - Settings forms  │
+  └─────────────────────────────────────────────────┘
+  
+  Adding New Modules:
+  1. Create Sidebar_NewModule.html
+  2. Add include('Sidebar_NewModule') directive in body
+  3. Functions will be available globally
+  
+  Syntax: < ? ! = include('filename') ? > (no spaces)
+-->
+<html>
+<head>
+    <base target="_top">
+  
+  <!-- ========================================
+       MODULAR INCLUDES
+       Order matters: styles → utils → features
+       ======================================== -->
+  
+  <!-- 1. Styles (CSS + Tailwind config) -->
+  <?!= include('Sidebar_Styles') ?>
+  
+  <!-- 2. Lucide Icons (professional SVG icon set) -->
+  <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+  
+  <!-- 3. Thinking animation (pure CSS - no external dependency) -->
+  
+</head>
+
+<body class="bg-white text-gray-900" onload="initializeSidebar()">
+  
+  <!-- ========================================
+       HEADER
+       Logo + menu toggle
+       ======================================== -->
+  <header class="sticky top-0 z-50 border-b bg-white/95 backdrop-blur">
+    <div class="flex h-12 items-center justify-between px-3">
+      <div class="flex items-center gap-2">
+        <div class="h-6 w-6 rounded bg-gradient-to-br from-blue-600 to-purple-600 flex items-center justify-center">
+          <span class="text-white text-xs font-bold">AI</span>
+        </div>
+        <span class="font-semibold text-sm">AISheeter.com</span>
+      </div>
+      <div class="flex items-center gap-1">
+        <!-- Width Toggle Button -->
+        <button id="widthToggleBtn" onclick="toggleSidebarWidth()" class="btn btn-ghost btn-icon btn-sm" title="Toggle sidebar width">
+          <i data-lucide="maximize-2" class="icon-sm"></i>
+        </button>
+        <!-- Menu Button -->
+        <button id="menuBtn" onclick="toggleMenu()" class="btn btn-ghost btn-icon btn-sm">
+          <i data-lucide="menu" class="icon-sm"></i>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- ========================================
+       USER STATUS BAR
+       Shows subscription tier and usage (loads silently)
+       Compact: single line for unlimited tiers, 
+       slightly taller for free tier (progress bar)
+       ======================================== -->
+  <div id="userStatus" class="border-b bg-gray-50/30 px-3 py-1.5">
+    <div id="subscriptionStatus" class="flex items-center justify-between min-h-[20px]">
+      <!-- Loads silently, shows content when ready -->
+    </div>
+  </div>
+
+  <!-- ========================================
+       TAB NAVIGATION
+       Agent (default) | AI Formulas | Settings
+       ======================================== -->
+  <div class="px-3 py-2 border-b">
+    <div class="tabs-list">
+      <button id="tab-agent" onclick="showAgent()" class="tabs-trigger active">Agent</button>
+      <button id="tab-home" onclick="showHome()" class="tabs-trigger">AI Formulas</button>
+      <button id="tab-settings" onclick="showSettings()" class="tabs-trigger">Settings</button>
+    </div>
+  </div>
+
+  <!-- ========================================
+       MAIN CONTENT AREA
+       Dynamic content rendered by JS
+       ======================================== -->
+  <main id="content" class="p-1 overflow-y-auto" style="max-height: calc(100vh - 140px);">
+    <!-- Content rendered dynamically by showHome(), showBulkAgent(), showSettings(), etc. -->
+  </main>
+
+  <!-- ========================================
+       MENU OVERLAY (backdrop)
+       ======================================== -->
+  <div id="menuOverlay" class="fixed inset-0 bg-black/50 z-40 hidden" onclick="toggleMenu()"></div>
+  
+  <!-- ========================================
+       SLIDE-OUT MENU PANEL
+       ======================================== -->
+  <div id="menuPanel" class="fixed top-0 right-0 h-full w-56 bg-white shadow-xl z-50 transform translate-x-full transition-transform duration-200">
+    <div class="p-3 border-b flex items-center justify-between">
+      <span class="font-semibold text-sm">Menu</span>
+      <button onclick="toggleMenu()" class="btn btn-ghost btn-icon btn-sm">
+        <i data-lucide="x" class="icon-sm"></i>
+      </button>
+    </div>
+    <nav class="p-2 space-y-1">
+      <button onclick="showHome(); toggleMenu();" class="btn btn-ghost w-full justify-start text-sm">
+        <i data-lucide="cpu" class="icon-sm" style="margin-right: 8px;"></i>
+        AI Formulas
+      </button>
+      <button onclick="showHowToUse(); toggleMenu();" class="btn btn-ghost w-full justify-start text-sm">
+        <i data-lucide="book-text" class="icon-sm" style="margin-right: 8px;"></i>
+        How to Use
+      </button>
+      <button onclick="google.script.run.openPromptManager();" class="btn btn-ghost w-full justify-start text-sm">
+        <i data-lucide="file-text" class="icon-sm" style="margin-right: 8px;"></i>
+        Saved Prompts
+      </button>
+      <div class="border-t my-2"></div>
+      <button onclick="showSubscription(); toggleMenu();" class="btn btn-ghost w-full justify-start text-sm">
+        <i data-lucide="credit-card" class="icon-sm" style="margin-right: 8px;"></i>
+        Subscription
+      </button>
+      <div class="border-t my-2"></div>
+      <button onclick="showPrivacy(); toggleMenu();" class="btn btn-ghost w-full justify-start text-sm text-gray-500">
+        <i data-lucide="shield" class="icon-xs" style="margin-right: 8px;"></i>
+        Privacy & Legal
+      </button>
+      <button onclick="showContact(); toggleMenu();" class="btn btn-ghost w-full justify-start text-sm text-gray-500">
+        <i data-lucide="mail" class="icon-xs" style="margin-right: 8px;"></i>
+        Contact Us
+      </button>
+    </nav>
+  </div>
+
+  <!-- ========================================
+       JAVASCRIPT MODULES
+       Order: utils (dependencies) → i18n → features
+       ======================================== -->
+  
+  <!-- 2. Utils (must be first - other modules depend on these) -->
+  <?!= include('Sidebar_Utils') ?>
+  
+  <!-- 3. Internationalization (multi-language keyword detection) -->
+  <?!= include('Sidebar_i18n') ?>
+  
+  <!-- 4. AI Agent modules (modular architecture) -->
+  <?!= include('Sidebar_Agent') ?>
+  <?!= include('Sidebar_Agent_Core') ?>
+  <?!= include('Sidebar_Agent_UI') ?>
+  <?!= include('Sidebar_Agent_Parsing') ?>
+  <?!= include('Sidebar_Agent_Thinking') ?>
+  <?!= include('Sidebar_Agent_Formula') ?>
+  <?!= include('Sidebar_Agent_MultiColumnFormula') ?>
+  <?!= include('Sidebar_Agent_Execution') ?>
+  <?!= include('Sidebar_Agent_JobMonitor') ?>
+  <?!= include('Sidebar_Agent_WriteQueue') ?>
+  <?!= include('Sidebar_Agent_Validation') ?>
+  <?!= include('Sidebar_Agent_Notifications') ?>
+  <?!= include('Sidebar_Agent_SheetPicker') ?>
+  <?!= include('Sidebar_Agent_CostDisplay') ?>
+  <!-- TaskChain modules (split for maintainability) -->
+  <?!= include('Sidebar_Agent_TaskChain_State') ?>
+  <?!= include('Sidebar_Agent_TaskChain_Context') ?>
+  <?!= include('Sidebar_Agent_TaskChain_Validation') ?>
+  <?!= include('Sidebar_Agent_TaskChain_UI') ?>
+  <?!= include('Sidebar_Agent_TaskChain_Execution') ?>
+  <?!= include('Sidebar_Agent_TaskChain_Parsing') ?>
+  <?!= include('Sidebar_Agent_TaskChain_Suggestions') ?>
+  <?!= include('Sidebar_Agent_Suggestions') ?>
+  <?!= include('Sidebar_Agent_Context') ?>
+  <?!= include('Sidebar_Agent_Help') ?>
+  <?!= include('Sidebar_Agent_Templates') ?>
+  <?!= include('Sidebar_Agent_PatternLearning') ?>
+  
+  <!-- 5. Bulk Agent module (form-based) -->
+  <?!= include('Sidebar_Bulk') ?>
+  
+  <!-- 6. Settings module -->
+  <?!= include('Sidebar_Settings') ?>
+
+</body>
+</html>

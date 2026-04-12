@@ -1,0 +1,71 @@
+{
+  "name": "aisheeter-backend",
+  "version": "1.0.0",
+  "private": false,
+  "description": "Open-source backend for AISheeter — multi-model AI for Google Sheets",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.9",
+    "@ai-sdk/google": "^3.0.6",
+    "@ai-sdk/openai": "^3.0.7",
+    "@aws-sdk/client-s3": "^3.965.0",
+    "@neondatabase/serverless": "^1.0.2",
+    "@radix-ui/react-dialog": "^1.1.15",
+    "@radix-ui/react-icons": "^1.3.2",
+    "@radix-ui/react-slot": "^1.2.4",
+    "@sentry/nextjs": "^10.46.0",
+    "@upstash/ratelimit": "^2.0.8",
+    "@upstash/redis": "^1.37.0",
+    "ai": "^6.0.26",
+    "autoprefixer": "^10.4.23",
+    "axios": "^1.13.2",
+    "class-variance-authority": "^0.7.0",
+    "clsx": "^2.1.1",
+    "crypto-js": "^4.2.0",
+    "framer-motion": "^12.26.2",
+    "lucide-react": "^0.562.0",
+    "next": "^16.1.1",
+    "openai": "^6.15.0",
+    "pino": "^10.3.1",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "stripe": "^20.1.2",
+    "tailwind-merge": "^2.6.0",
+    "tailwindcss-animate": "^1.0.7",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.1.18",
+    "@types/crypto-js": "^4.2.2",
+    "@types/node": "^20",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "eslint": "^9",
+    "eslint-config-next": "^16.1.1",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^4.1.18",
+    "typescript": "^5"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Ai-Quill/aisheeter-opensource.git"
+  },
+  "keywords": [
+    "google-sheets",
+    "ai",
+    "openai",
+    "claude",
+    "gemini",
+    "spreadsheet",
+    "nextjs",
+    "vercel"
+  ]
+}

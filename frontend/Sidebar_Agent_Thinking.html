@@ -1,0 +1,217 @@
+<!--
+  @file Sidebar_Agent_Thinking.html
+  @version 1.0.0
+  @created 2026-04-05
+  
+  Thinking indicator component with 3-state progressive disclosure:
+  - compact: shimmer bar with label + elapsed time
+  - teaser: 1-2 line reasoning preview (auto after 3s)
+  - expanded: full reasoning text (user-triggered)
+  
+  Included by: Sidebar.html
+  Usage: include('Sidebar_Agent_Thinking')
+-->
+<script>
+// ============================================
+// THINKING INDICATOR - Progressive Disclosure
+// ============================================
+
+var _thinkingState = {
+  visible: false,
+  state: 'compact',    // 'compact' | 'teaser' | 'expanded'
+  model: '',
+  startTime: 0,
+  reasoning: '',
+  userOverride: false,
+  teaserTimer: null,
+  elapsedTimer: null
+};
+
+/**
+ * Show thinking indicator in the message stream
+ * @param {string} model - Model name for badge display
+ * @param {string} label - Custom label (default: 'Thinking...')
+ */
+function showThinkingIndicator(model, label) {
+  // Remove any existing indicator
+  hideThinkingIndicator();
+  
+  _thinkingState.visible = true;
+  _thinkingState.state = 'compact';
+  _thinkingState.model = model || '';
+  _thinkingState.startTime = Date.now();
+  _thinkingState.reasoning = '';
+  _thinkingState.userOverride = false;
+  
+  var displayLabel = label || 'Thinking...';
+  var modelBadge = model ? _getModelBadge(model) : '';
+  
+  var html = '<div id="thinkingIndicator" class="thinking-indicator thinking-compact" data-type="thinking">' +
+    '<div class="thinking-header" onclick="toggleThinkingExpand()">' +
+      '<div class="thinking-shimmer"></div>' +
+      '<div class="thinking-orb">' +
+        '<div class="thinking-orb-core"></div>' +
+        '<div class="thinking-orb-ring"></div>' +
+        '<div class="thinking-orb-ring thinking-orb-ring-2"></div>' +
+      '</div>' +
+      '<span class="thinking-label">' + displayLabel + '</span>' +
+      modelBadge +
+      '<div class="thinking-progress"><div class="thinking-progress-bar"></div></div>' +
+      '<span class="thinking-toggle">&#x25BE;</span>' +
+    '</div>' +
+    '<div class="thinking-teaser" id="thinkingTeaser">' +
+      '<span class="thinking-preview" id="thinkingPreview"></span>' +
+    '</div>' +
+    '<div class="thinking-body" id="thinkingBody">' +
+      '<pre class="thinking-reasoning" id="thinkingReasoning"></pre>' +
+      '<div class="thinking-meta" id="thinkingMeta"></div>' +
+    '</div>' +
+  '</div>';
+  
+  var container = document.getElementById('agentMessages');
+  if (container) {
+    container.insertAdjacentHTML('beforeend', html);
+    _scrollToBottom();
+  }
+  
+  // Progress bar animation runs via CSS — no JS timer needed
+  _thinkingState.elapsedTimer = null;
+  
+  // Auto-teaser after 3s (progressive disclosure)
+  _thinkingState.teaserTimer = setTimeout(function() {
+    if (_thinkingState.visible && !_thinkingState.userOverride && _thinkingState.state === 'compact') {
+      if (_thinkingState.reasoning) {
+        _setThinkingState('teaser');
+      }
+    }
+  }, 3000);
+}
+
+/**
+ * Update reasoning text from polling response
+ * @param {string} text - Reasoning text from API
+ */
+function updateThinkingReasoning(text) {
+  if (!text || !_thinkingState.visible) return;
+  
+  _thinkingState.reasoning = text;
+  
+  var preview = document.getElementById('thinkingPreview');
+  if (preview) {
+    // Show first ~100 chars as preview
+    preview.textContent = text.substring(0, 120) + (text.length > 120 ? '...' : '');
+  }
+  
+  var full = document.getElementById('thinkingReasoning');
+  if (full) {
+    full.textContent = text;
+  }
+  
+  // If we're past 3s and still compact, auto-transition to teaser
+  if (_thinkingState.state === 'compact' && !_thinkingState.userOverride) {
+    var elapsed = Date.now() - _thinkingState.startTime;
+    if (elapsed > 3000) {
+      _setThinkingState('teaser');
+    }
+  }
+}
+
+/**
+ * Hide thinking indicator and return accumulated reasoning
+ * @returns {string|null} The reasoning text accumulated during thinking
+ */
+function hideThinkingIndicator() {
+  var reasoning = _thinkingState.reasoning || null;
+  
+  // Clear timers
+  if (_thinkingState.teaserTimer) {
+    clearTimeout(_thinkingState.teaserTimer);
+    _thinkingState.teaserTimer = null;
+  }
+  if (_thinkingState.elapsedTimer) {
+    clearInterval(_thinkingState.elapsedTimer);
+    _thinkingState.elapsedTimer = null;
+  }
+  
+  // Remove DOM element
+  var el = document.getElementById('thinkingIndicator');
+  if (el) {
+    el.remove();
+  }
+  
+  _thinkingState.visible = false;
+  _thinkingState.state = 'compact';
+  _thinkingState.reasoning = '';
+  
+  return reasoning;
+}
+
+/**
+ * Toggle between teaser and expanded states
+ */
+function toggleThinkingExpand() {
+  if (!_thinkingState.visible) return;
+  
+  _thinkingState.userOverride = true;
+  
+  if (_thinkingState.state === 'expanded') {
+    _setThinkingState('teaser');
+  } else {
+    _setThinkingState('expanded');
+  }
+}
+
+/**
+ * Set thinking indicator visual state
+ * @param {string} state - 'compact', 'teaser', or 'expanded'
+ */
+function _setThinkingState(state) {
+  _thinkingState.state = state;
+  
+  var el = document.getElementById('thinkingIndicator');
+  if (!el) return;
+  
+  // Remove all state classes
+  el.classList.remove('thinking-compact', 'thinking-show-teaser', 'thinking-show-expanded');
+  
+  if (state === 'compact') {
+    el.classList.add('thinking-compact');
+  } else if (state === 'teaser') {
+    el.classList.add('thinking-show-teaser');
+  } else if (state === 'expanded') {
+    el.classList.add('thinking-show-expanded');
+  }
+  
+  _scrollToBottom();
+}
+
+/**
+ * Get short model badge HTML
+ * @param {string} model - Full model name
+ * @returns {string} Badge HTML
+ */
+function _getModelBadge(model) {
+  var short = model;
+  // Shorten common model names
+  if (model.indexOf('gpt-5.4') >= 0) short = '5.4';
+  else if (model.indexOf('gpt-5') >= 0) short = '5';
+  else if (model.indexOf('o4-mini') >= 0) short = 'o4m';
+  else if (model.indexOf('o3-mini') >= 0) short = 'o3m';
+  else if (model.indexOf('o3') >= 0) short = 'o3';
+  else if (model.indexOf('gemini') >= 0) short = 'gem';
+  else if (model.indexOf('claude') >= 0) short = 'cld';
+  else if (model.indexOf('llama') >= 0) short = 'llm';
+  else short = model.substring(0, 6);
+  
+  return '<span class="thinking-model">' + short + '</span>';
+}
+
+function _scrollToBottom() {
+  var scrollArea = document.querySelector('.agent-scroll-area');
+  if (scrollArea) {
+    setTimeout(function() {
+      scrollArea.scrollTo({ top: scrollArea.scrollHeight, behavior: 'smooth' });
+    }, 50);
+  }
+}
+</script>

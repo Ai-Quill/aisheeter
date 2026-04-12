@@ -1,0 +1,268 @@
+/**
+ * AI Query Endpoint - Unified via Vercel AI SDK
+ * 
+ * Features:
+ * - Single API for all providers (OpenAI, Anthropic, Google, Groq)
+ * - Built-in system prompts (context engineering)
+ * - Response caching (saves API costs)
+ * - Automatic task type inference
+ * - Unified token counting
+ * - Multi-modal support (text + images)
+ * 
+ * @see https://ai-sdk.dev/docs/introduction
+ */
+
+import { NextResponse } from 'next/server';
+import { generateText } from 'ai';
+import { sql } from '@/lib/db';
+import { getModel, type AIProvider } from '@/lib/ai/models';
+import { getSystemPrompt, inferTaskType } from '@/lib/prompts';
+import { generateCacheKey, getFromCache, setCache } from '@/lib/cache';
+import { decryptApiKey, isValidDecryptedKey } from '@/utils/encryption';
+import { queryBodySchema, validateBody } from '@/lib/security/validation';
+import { checkRateLimit, getRateLimitHeaders } from '@/lib/security/rate-limit';
+
+// Type for multi-modal message content
+type MessageContent = 
+  | string 
+  | Array<{ type: 'text'; text: string } | { type: 'image'; image: string }>;
+
+// For image processing, convert URLs to base64
+async function fetchImageAsBase64(url: string): Promise<string> {
+  // Validate URL before fetching
+  if (!url || typeof url !== 'string') {
+    throw new Error('Invalid image URL: URL is empty or not a string');
+  }
+  
+  // Check for Google Sheets error values
+  if (url.startsWith('#') || url === '#REF!' || url === '#VALUE!' || url === '#N/A' || url === '#ERROR!') {
+    throw new Error(`Invalid image URL: "${url}" appears to be a spreadsheet error value`);
+  }
+  
+  // Validate URL format
+  try {
+    new URL(url);
+  } catch {
+    throw new Error(`Invalid image URL format: "${url.substring(0, 50)}..."`);
+  }
+  
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch image: ${response.status} ${response.statusText}`);
+  }
+  
+  const arrayBuffer = await response.arrayBuffer();
+  const base64 = Buffer.from(arrayBuffer).toString('base64');
+  const mimeType = response.headers.get('content-type') || 'image/jpeg';
+  return `data:${mimeType};base64,${base64}`;
+}
+
+async function getUserIdFromEmail(userEmail: string): Promise<string | null> {
+  const [data] = await sql`SELECT id FROM users WHERE email = ${userEmail}`;
+  return data?.id || null;
+}
+
+export async function POST(req: Request): Promise<Response> {
+  const body = await req.json();
+
+  // Validate request body
+  const validation = validateBody(body, queryBodySchema);
+  if (!validation.success) {
+    return NextResponse.json({ error: validation.error }, { status: 400 });
+  }
+
+  // Rate limit by user
+  const rateLimitId = body.userId || body.userEmail || 'anonymous';
+  const rateLimit = await checkRateLimit(rateLimitId, 'ai');
+  if (!rateLimit.success) {
+    return NextResponse.json(
+      { error: 'Too many requests. Please slow down.' },
+      { status: 429, headers: getRateLimitHeaders(rateLimit) }
+    );
+  }
+
+  const { 
+    model, 
+    input, 
+    userEmail, 
+    userId, 
+    specificModel, 
+    encryptedApiKey, 
+    imageUrl,
+    taskType: explicitTaskType,
+    skipCache = false
+  } = body;
+
+  // Validate required fields (belt-and-suspenders with zod above)
+  if (!model || !input || (!userEmail && !userId) || !encryptedApiKey) {
+    return NextResponse.json({ error: 'Missing required parameters' }, { status: 400 });
+  }
+
+  try {
+    // Resolve user ID
+    let actualUserId = userId;
+    if (!actualUserId && userEmail) {
+      actualUserId = await getUserIdFromEmail(userEmail);
+      if (!actualUserId) {
+        return NextResponse.json({ error: 'User not found' }, { status: 404 });
+      }
+    }
+
+    // Decrypt API key using centralized encryption utils
+    const apiKey = decryptApiKey(encryptedApiKey);
+    if (!apiKey || !isValidDecryptedKey(apiKey)) {
+      return NextResponse.json({ 
+        error: 'Invalid or corrupted API key. Please reconfigure your API key in Settings.',
+        code: 'DECRYPTION_FAILED'
+      }, { status: 401 });
+    }
+
+    // Resolve model
+    let selectedModel = specificModel;
+    if (!selectedModel) {
+      const [data] = await sql`
+        SELECT default_model FROM api_keys
+        WHERE user_id = ${actualUserId} AND model = ${model}
+      `;
+
+      if (!data) throw new Error('API key configuration not found');
+      selectedModel = data.default_model;
+    }
+
+    // Get credit price per token
+    const [modelData] = await sql`
+      SELECT credit_price_per_token FROM models WHERE name = ${selectedModel}
+    `;
+
+    if (!modelData) {
+      return NextResponse.json({ error: 'Model data not found' }, { status: 404 });
+    }
+
+    const creditPricePerToken = modelData.credit_price_per_token;
+
+    // === Context Engineering: Get appropriate system prompt ===
+    const taskType = explicitTaskType || inferTaskType(input);
+    const systemPrompt = getSystemPrompt(taskType);
+
+    // === Check cache (skip for image queries - they're unique) ===
+    const canCache = !imageUrl && !skipCache;
+    let cacheKey = '';
+    
+    if (canCache) {
+      cacheKey = generateCacheKey(selectedModel, systemPrompt, input);
+      const cacheResult = await getFromCache(cacheKey);
+      
+      if (cacheResult.cached) {
+        // Cache hit! Return cached response
+        const creditsUsed = cacheResult.tokensUsed * creditPricePerToken;
+        
+        // Log as cached usage (no actual API call made)
+        await sql`
+          INSERT INTO credit_usage (user_id, model, credits_used)
+          VALUES (${actualUserId}, ${model}, 0)
+        `;
+
+        return NextResponse.json({ 
+          result: cacheResult.response, 
+          creditsUsed: 0,  // Free!
+          meta: {
+            taskType,
+            model: selectedModel,
+            cached: true,
+            tokens: {
+              input: 0,
+              output: 0,
+              total: cacheResult.tokensUsed  // Original token count
+            }
+          }
+        });
+      }
+    }
+
+    // === Build messages array (supports text + images) ===
+    let messageContent: MessageContent;
+
+        if (imageUrl) {
+      // Validate imageUrl before processing
+      if (typeof imageUrl !== 'string' || imageUrl.startsWith('#')) {
+        return NextResponse.json({ 
+          error: `Invalid image URL: "${String(imageUrl).substring(0, 50)}" - this appears to be a spreadsheet error value` 
+        }, { status: 400 });
+      }
+      
+      // Multi-modal: text + image
+      const base64Image = await fetchImageAsBase64(imageUrl);
+      messageContent = [
+            { type: 'text', text: input },
+        { type: 'image', image: base64Image }
+          ];
+    } else {
+      // Text only
+      messageContent = input;
+    }
+    
+    const messages = [{ role: 'user' as const, content: messageContent }];
+
+    // === Generate response using AI SDK ===
+    const generateResult = await generateText({
+      model: getModel(model as AIProvider, selectedModel, apiKey),
+      system: systemPrompt,
+      messages,
+      maxOutputTokens: 4000,
+    });
+    
+    const { usage } = generateResult;
+    // Clean response text: strip any reasoning/thinking tag artifacts
+    let text = generateResult.text;
+    text = text.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '').trim();
+    text = text.replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, '').trim();
+    
+    // Log reasoning info for thinking models
+    const reasoningTokens = (usage as any)?.outputTokenDetails?.reasoning || 0;
+    if (reasoningTokens > 0) {
+      console.log(`[query] 🧠 Reasoning model: ${reasoningTokens} reasoning tokens`);
+    }
+
+    // Calculate credits used (AI SDK v6 uses inputTokens/outputTokens)
+    const inputTokens = usage?.inputTokens || 0;
+    const outputTokens = usage?.outputTokens || 0;
+    const totalTokens = inputTokens + outputTokens;
+    const creditsUsed = totalTokens * creditPricePerToken;
+
+    // === Store in cache (for text-only queries) ===
+    if (canCache && cacheKey) {
+      await setCache(cacheKey, selectedModel, cacheKey.slice(0, 16), text, totalTokens);
+    }
+
+    // Log credit usage
+    await sql`
+      INSERT INTO credit_usage (user_id, model, credits_used)
+      VALUES (${actualUserId}, ${model}, ${creditsUsed})
+    `;
+
+    return NextResponse.json({ 
+      result: text, 
+      creditsUsed,
+      meta: {
+        taskType,
+        model: selectedModel,
+        cached: false,
+        tokens: {
+          input: inputTokens,
+          output: outputTokens,
+          total: totalTokens
+        }
+      }
+    });
+
+  } catch (error: unknown) {
+    console.error('Error processing request:', error instanceof Error ? error.message : String(error));
+    
+    // Provide more helpful error messages
+    const errorMessage = error instanceof Error ? error.message : 'Internal server error';
+    const status = errorMessage.includes('API key') ? 401 : 
+                   errorMessage.includes('not found') ? 404 : 500;
+    
+    return NextResponse.json({ error: errorMessage }, { status });
+  }
+}

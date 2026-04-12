@@ -1,0 +1,401 @@
+<!--
+  @file Sidebar_Agent_TaskChain_Parsing.html
+  @version 1.0.0
+  @created 2026-02-05
+  
+  TASK CHAIN - Parsing Module
+  
+  Contains:
+  - Multi-step command detection
+  - AI chain parsing
+  - Request building
+  
+  Depends on: Sidebar_Agent_TaskChain_State.html, Sidebar_Agent_TaskChain_Context.html
+-->
+
+<script>
+// ============================================
+// MULTI-STEP DETECTION
+// ============================================
+
+/**
+ * Check if a command is multi-step
+ * Called before regular command processing
+ * 
+ * @param {string} command - User command
+ * @return {Promise<boolean>} True if multi-step detected
+ */
+async function checkForMultiStepCommand(command) {
+  if (!command || command.trim().length < 10) return false;
+  
+  // Skip if already executing a chain
+  if (chainExecuting) {
+    console.log('🔗 [TaskChain] Skipping - chain already executing');
+    return false;
+  }
+  
+  // ALL commands go through AI analysis — let AI decide the routing.
+  // Previously this had a regex-based isFillAllCommand bypass, but that caused
+  // false positives (e.g., "Format this table" matched "this table" fill pattern).
+  // The AI backend correctly classifies commands as multi-step, single-step, or chat.
+  
+  console.log('🔗 [TaskChain] Checking command:', command.substring(0, 80) + '...');
+  
+  // Set parsing flag
+  chainParsing = true;
+  
+  // For complex commands, always ask AI to analyze
+  console.log('🔗 [TaskChain] Complex command - asking AI to analyze...');
+  
+  // Get selected model from UI
+  const selectedModel = document.getElementById('agentModelSelect')?.value || 'GEMINI';
+  console.log('🔗 [TaskChain] Using model from UI:', selectedModel);
+  
+  showParsingProgress('Analyzing your request...');
+  
+  try {
+    // CRITICAL: Always refresh context before sending command
+    // Even if we have context, the user may have:
+    //   - Changed their selection in the sheet
+    //   - Added/removed data
+    //   - Switched sheets
+    // The only exception is when user manually typed a custom range —
+    // in that case, we keep their range but still refresh headers/sample data.
+    let context = window.currentContext || currentSelectionContext || {};
+    
+    // If user hasn't set a custom range, always refresh to get latest selection
+    const shouldRefresh = !userEditedRange || !context.selectionInfo?.dataRange || !context.headers?.length;
+    
+    if (shouldRefresh) {
+      const reason = !context.selectionInfo?.dataRange ? 'missing data' : 
+                     !context.headers?.length ? 'missing headers' : 
+                     !userEditedRange ? 'auto-refresh for latest selection' : 'unknown';
+      console.log('🔗 [TaskChain] Refreshing context (' + reason + ')...');
+      try {
+        const freshContext = await new Promise((resolve, reject) => {
+          google.script.run
+            .withSuccessHandler(resolve)
+            .withFailureHandler(reject)
+            .getAgentContext();
+        });
+        if (freshContext) {
+          if (userEditedRange && context.selectionInfo) {
+            // User has a custom range — keep their range but refresh headers/data
+            freshContext.selectionInfo = {
+              ...freshContext.selectionInfo,
+              range: context.selectionInfo.range,
+              dataRange: context.selectionInfo.dataRange,
+              columnsWithData: context.selectionInfo.columnsWithData,
+              dataStartRow: context.selectionInfo.dataStartRow,
+              dataEndRow: context.selectionInfo.dataEndRow,
+              dataRowCount: context.selectionInfo.dataRowCount,
+              numRows: context.selectionInfo.numRows,
+              isExplicit: true,
+              selectionSource: 'explicit'
+            };
+            console.log('🔗 [TaskChain] Merged: kept custom range, refreshed headers/data');
+          }
+          context = freshContext;
+          currentSelectionContext = freshContext;
+          window.currentContext = freshContext;
+          console.log('🔗 [TaskChain] Context refreshed:', {
+            headers: Object.keys(freshContext.headerRow || {}).length,
+            dataRange: freshContext.selectionInfo?.dataRange,
+            columnsWithData: freshContext.selectionInfo?.columnsWithData?.join(',')
+          });
+        }
+      } catch (refreshError) {
+        console.warn('🔗 [TaskChain] Context refresh failed:', refreshError);
+      }
+    } else {
+      console.log('🔗 [TaskChain] Using existing context (user has custom range)');
+    }
+    
+    const enhancedContext = buildEnhancedContext(context);
+    
+    // Debug: Log what we're sending
+    console.log('🔗 [TaskChain] Sending context to backend:', {
+      hasHeaders: enhancedContext.headers?.length > 0 || Object.keys(enhancedContext.headerRow || {}).length > 0,
+      headerCount: enhancedContext.headers?.length || Object.keys(enhancedContext.headerRow || {}).length,
+      dataRange: enhancedContext.dataRange,  // From buildEnhancedContext (full range)
+      dataStartRow: enhancedContext.dataStartRow,
+      dataEndRow: enhancedContext.dataEndRow,
+      columnsWithData: (enhancedContext.columnsWithData || enhancedContext.selectionInfo?.columnsWithData || []).join(','),
+      emptyColumns: (enhancedContext.emptyColumns || []).slice(0, 5).join(',')
+    });
+    
+    // ============================================
+    // AI-DRIVEN: Send ALL commands to the backend AI agent.
+    // No local regex shortcuts — the AI decides which tools to use.
+    // If the backend times out, the GAS fallback uses a lightweight
+    // AI classification call to build the workflow.
+    // ============================================
+    
+    // Call backend to parse the chain
+    const result = await new Promise((resolve, reject) => {
+      google.script.run
+        .withSuccessHandler(resolve)
+        .withFailureHandler(reject)
+        .parseTaskChain(command, enhancedContext, selectedModel);
+    });
+    
+    removeParsingProgress();
+    chainParsing = false;
+    
+    console.log('🔗 [TaskChain] AI analysis result:', result);
+    
+    // Log API errors for debugging
+    if (result._apiError) {
+      console.warn('🔗 [TaskChain] API error occurred:', result._apiError);
+      if (result._usedFallback) {
+        console.warn('🔗 [TaskChain] Used local fallback parser');
+      }
+    }
+    
+    // Handle errors
+    if (result.error) {
+      showError(result.error);
+      return false;
+    }
+    
+    // Handle clarification needed (includes rate limit messages)
+    if (result.needsClarification) {
+      // Show clarification request as chat message
+      addAgentMessage('agent', result.clarification || 'Could you please provide more details about what you want to do?');
+      return true; // Prevent regular processing
+    }
+    
+    // Handle chat-only responses (analyze without sheet actions)
+    if (result.outputMode === 'chat' && result.chatResponse) {
+      console.log('🔗 [TaskChain] Chat-only response detected');
+      
+      // Capture reasoning data for the thinking indicator / message card
+      if (result._reasoning) {
+        window._lastReasoningText = result._reasoning;
+        window._lastReasoningTokens = result._reasoningTokens || 0;
+        if (typeof updateThinkingReasoning === 'function') {
+          updateThinkingReasoning(result._reasoning);
+        }
+      }
+      
+      // Sanitize chatResponse: ensure it's a displayable string, not JSON/object
+      var chatContent = result.chatResponse;
+      if (typeof chatContent === 'object') {
+        // Object leaked through — extract text if possible
+        chatContent = chatContent.chatResponse || chatContent.description || 
+                      chatContent.result_summary || chatContent.summary ||
+                      JSON.stringify(chatContent, null, 2);
+        console.warn('🔗 [TaskChain] chatResponse was object, extracted text');
+      } else if (typeof chatContent === 'string' && chatContent.trim().startsWith('{')) {
+        // String that looks like JSON — try to extract meaningful text
+        try {
+          var parsed = JSON.parse(chatContent);
+          chatContent = parsed.chatResponse || parsed.result_summary || 
+                        parsed.description || parsed.summary || chatContent;
+          console.warn('🔗 [TaskChain] chatResponse was JSON string, extracted text');
+        } catch(e) {
+          // Not valid JSON, display as-is
+        }
+      }
+      
+      // Check if this is a generic/empty analysis fallback from the backend.
+      // When the AI calls the analyze tool but produces no text, the backend
+      // returns a generic "I've analyzed your request: ..." placeholder.
+      // In that case, route to the frontend's _executeAnalyzeStep which reads
+      // real sheet data and makes a dedicated AI call for actual analysis.
+      var hasAnalyzeStep = result.steps && result.steps.some(function(s) {
+        return s.action === 'analyze' || s.outputFormat === 'chat';
+      });
+      var isGenericFallback = typeof chatContent === 'string' && (
+        chatContent.startsWith("I've analyzed your request") ||
+        chatContent.startsWith("I\u2019ve analyzed your request") ||
+        chatContent === 'Analysis complete.' ||
+        chatContent.length < 100
+      );
+      
+      if (hasAnalyzeStep && isGenericFallback) {
+        console.log('🔗 [TaskChain] Generic analyze response detected — executing real analysis on frontend');
+        
+        // Extract the question from the analyze step
+        var analyzeStep = result.steps.find(function(s) {
+          return s.action === 'analyze' || s.outputFormat === 'chat';
+        });
+        var analyzeQuestion = (analyzeStep && (analyzeStep.question || analyzeStep.description || analyzeStep.prompt)) || 
+                               result._originalCommand || chatContent;
+        
+        // Show thinking indicator while analysis runs
+        if (typeof showThinkingIndicator === 'function') {
+          showThinkingIndicator(window.selectedModel || '', 'Analyzing data...');
+        }
+        
+        // Call the frontend analysis function which reads real sheet data
+        google.script.run
+          .withSuccessHandler(function(analysisResult) {
+            if (typeof hideThinkingIndicator === 'function') {
+              var reasoning = hideThinkingIndicator();
+              if (reasoning) window._lastReasoningText = reasoning;
+            }
+            
+            if (analysisResult && analysisResult.success && analysisResult.response) {
+              addAgentMessage('agent', analysisResult.response);
+            } else {
+              // Fallback to the original chatResponse if analysis failed
+              addAgentMessage('agent', chatContent);
+            }
+            
+            // Show suggestions if available
+            if (result.suggestedActions && result.suggestedActions.length > 0 && typeof renderSuggestedActions === 'function') {
+              renderSuggestedActions(result.suggestedActions);
+            }
+            autoScrollMessages();
+          })
+          .withFailureHandler(function(error) {
+            console.error('🔗 [TaskChain] Frontend analysis failed:', error);
+            if (typeof hideThinkingIndicator === 'function') hideThinkingIndicator();
+            // Show original chatResponse as fallback
+            addAgentMessage('agent', chatContent);
+            autoScrollMessages();
+          })
+          .executeAnalysisChat(analyzeQuestion, window.selectedModel || '');
+        
+        return true;
+      }
+      
+      addAgentMessage('agent', chatContent);
+      // Show insight-driven suggestions if available
+      if (result.suggestedActions && result.suggestedActions.length > 0 && typeof renderSuggestedActions === 'function') {
+        console.log('🔗 [TaskChain] Rendering', result.suggestedActions.length, 'suggested actions');
+        renderSuggestedActions(result.suggestedActions);
+      }
+      return true;
+    }
+    
+    // Check if we got valid steps
+    if (result.steps && result.steps.length > 0) {
+      console.log(`🔗 [TaskChain] AI proposed workflow with ${result.steps.length} steps`);
+      
+      // Log steps with input/output info
+      result.steps.forEach((step, idx) => {
+        const inputCols = step.inputColumns?.join(',') || 'N/A';
+        const outputCol = step.outputColumn || 'N/A';
+        console.log(`🔗 [TaskChain] Step ${idx + 1}: ${step.action} | input: ${inputCols} → output: ${outputCol}`);
+        // Log chart-specific config so we can verify AI output
+        if (step.action === 'chart') {
+          const cfg = step.config || step.toolCall || {};
+          console.log('🔗 [TaskChain] 📊 CHART CONFIG from AI:', {
+            domainColumn: cfg.domainColumn || 'MISSING',
+            dataColumns: cfg.dataColumns || 'MISSING',
+            chartType: cfg.chartType || 'MISSING',
+            title: cfg.title || 'MISSING',
+            seriesNames: cfg.seriesNames || 'MISSING',
+            allKeys: Object.keys(cfg)
+          });
+        }
+      });
+      
+      // Normalize and validate steps
+      const validation = normalizeAndValidateSteps(result.steps);
+      
+      if (!validation.valid) {
+        const blocking = validation.blockingReasons || validation.reasons || [];
+        console.log('🔗 [TaskChain] ❌ Blocking validation issues:', blocking);
+        const reasonText = (blocking && blocking.length > 0)
+          ? blocking.slice(0, 4).join('; ')
+          : 'Unknown validation failure';
+        showError('Task chain blocked by validation: ' + reasonText);
+        removeParsingProgress();
+        chainParsing = false;
+        return false;
+      }
+      
+      if (validation.warningReasons && validation.warningReasons.length > 0) {
+        console.log('🔗 [TaskChain] ⚠️ Validation warnings:', validation.warningReasons);
+      }
+      
+      console.log('🔗 [TaskChain] ✅ All steps validated successfully');
+      console.log('🔗 [TaskChain] Using model:', selectedModel);
+      
+      // Store chain and input info
+      currentChain = result;
+      currentChain.model = selectedModel;
+      
+      // Also store as currentPlan for compatibility
+      currentPlan = result;
+      window.currentPlan = result;
+      
+      // Render appropriate UI based on result type
+      if (result._usedSDKAgent) {
+        renderProposedWorkflow(result);
+      } else {
+        renderChainConfirmation(result);
+      }
+      
+      return true;
+    }
+    
+    // No steps - let regular processing handle it
+    if (result._usedFallback) {
+      console.log('🔗 [TaskChain] Backend failed, no frontend fallback — delegating to regular processing');
+    }
+    
+    console.log('🔗 [TaskChain] No multi-step workflow detected');
+    return false;
+    
+  } catch (error) {
+    console.error('🔗 [TaskChain] Error:', error);
+    removeParsingProgress();
+    chainParsing = false;
+    
+    showError('Failed to analyze command: ' + (error.message || error));
+    return false;
+  }
+}
+
+/**
+ * Execute a suggested next action
+ * Reuses the same flow as single-task execution
+ * 
+ * @param {string} command - Command to execute
+ * @param {string} suggestionTitle - Title for tracking
+ */
+function executeNextAction(command, suggestionTitle) {
+  if (!command) return;
+  
+  // Record usage for learning
+  if (lastSuggestionWorkflowId) {
+    recordSuggestionUsage(lastSuggestionWorkflowId, suggestionTitle);
+  }
+  
+  // Remove the suggestions UI
+  const suggestionsEl = document.querySelector('[data-type="chain-suggestions"]');
+  if (suggestionsEl) suggestionsEl.remove();
+  
+  // Set the command in the input
+  const input = document.getElementById('agentInput');
+  if (input) {
+    input.value = command;
+  }
+  
+  // Trigger processing
+  processCommand(command);
+}
+
+/**
+ * Record suggestion usage for learning loop
+ * Called when user clicks a suggestion
+ */
+function recordSuggestionUsage(workflowId, suggestion) {
+  if (!workflowId || !suggestion) return;
+  
+  // Fire and forget - don't block UI
+  google.script.run.recordSuggestionUsage({
+    workflowId: workflowId,
+    suggestion: suggestion,
+    timestamp: new Date().toISOString()
+  });
+  
+  console.log('🎯 [Suggestions] Recorded usage:', suggestion);
+}
+
+console.log('📦 Agent TaskChain Parsing module loaded');
+</script>
