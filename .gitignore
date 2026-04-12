@@ -41,3 +41,7 @@ coverage/
 
 # Google Apps Script
 frontend/.clasprc.json
+
+# Internal tooling (should never be here, but just in case)
+sync.sh
+sync-opensource.sh
