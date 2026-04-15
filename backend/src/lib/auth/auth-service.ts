@@ -21,7 +21,7 @@
  *   const auth = await authenticateRequest(body);
  *   if (!auth.success) return NextResponse.json({ error: auth.error }, { status: 401 });
  *   const { provider, model, isManaged } = auth;
- *   // After AI call: if (auth.isManaged) debitManagedCredits(auth.userId, cost)
+ *   // After AI call: if (auth.isManaged) debitManagedCredits(auth.userId, getModelCreditCost(modelId))
  */
 
 import { decryptApiKey, isValidDecryptedKey } from '@/utils/encryption';
@@ -115,8 +115,8 @@ const DEFAULT_PROVIDER: AIProvider = 'GEMINI';
  * 
  * // After AI call, if managed:
  * if (auth.isManaged) {
- *   const cost = calculateQueryCost(auth.modelId, usage.inputTokens, usage.outputTokens);
- *   await debitManagedCredits(auth.managedUserId!, cost);
+ *   const credits = getModelCreditCost(auth.modelId);
+ *   await debitManagedCredits(auth.managedUserId!, credits);
  * }
  */
 export async function authenticateRequest(

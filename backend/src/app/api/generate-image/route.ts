@@ -16,7 +16,7 @@ import { decryptApiKey, isValidDecryptedKey } from '@/utils/encryption';
 import axios from 'axios';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import OpenAI from 'openai';
-import { randomUUID } from 'crypto';
+import { v4 as uuidv4 } from 'uuid';
 import { sql } from '@/lib/db';
 
 // Initialize S3 client
@@ -152,7 +152,7 @@ export async function POST(req: Request): Promise<Response> {
         return NextResponse.json({ error: 'Unsupported model' }, { status: 400 });
     }
 
-    const fileName = `${randomUUID()}.png`;
+    const fileName = `${uuidv4()}.png`;
     const imageUrl = await uploadToS3(imageBuffer, userId, fileName);
 
     await sql`

@@ -17,8 +17,8 @@ import { neon } from '@neondatabase/serverless';
 
 const databaseUrl = process.env.NEON_DB_URL;
 
-if (!databaseUrl && process.env.NODE_ENV !== 'production') {
-  console.warn('NEON_DB_URL not set — database features will fail at runtime');
+if (!databaseUrl) {
+  throw new Error('NEON_DB_URL environment variable is required');
 }
 
-export const sql = neon(databaseUrl || 'postgresql://placeholder:placeholder@localhost/placeholder');
+export const sql = neon(databaseUrl);

@@ -362,12 +362,13 @@ function executeTaskChain(chain, context) {
       
       return stepCopy;
     }),
-    startedAt: new Date().toISOString()
+    startedAt: new Date().toISOString(),
+    _continuationPending: chain._continuationPending || false
   };
   
   saveChainState(chainState);
   
-  Logger.log('[TaskChain] 🚀 Starting execution...');
+  Logger.log('[TaskChain] 🚀 Starting execution...' + (chainState._continuationPending ? ' (continuation pending)' : ''));
   executeNextStep(chainState.chainId, chainState);
   
   return {
@@ -428,6 +429,13 @@ function executeNextStep(chainId, chainStateOrContext) {
   }
   
   if (nextStepIndex === -1) {
+    // If continuation is pending, don't finalize yet — more steps are coming
+    if (chainState._continuationPending) {
+      Logger.log('[TaskChain] ⏸️ All current steps done, but continuation pending — waiting for more steps');
+      saveChainState(chainState);
+      return;
+    }
+    
     // All steps are in a terminal state — determine chain outcome
     var stepResults = _summarizeStepResults(chainState);
     
@@ -857,22 +865,44 @@ function executeNextStep(chainId, chainStateOrContext) {
       var successCount = 0;
       var formulaErrors = [];
       
-      // STANDARD: Natural Google Sheets formula — set on first row, copy down
-      Logger.log('[TaskChain] Using standard formula mode (copy down)');
-      try {
-        var firstCell = sheet.getRange(step.outputColumn + startRow);
-        firstCell.setFormula(formulaSource);
-        successCount = 1;
-        
-        if (endRow > startRow) {
-          var destRange = sheet.getRange(step.outputColumn + (startRow + 1) + ':' + step.outputColumn + endRow);
-          firstCell.copyTo(destRange);
-          successCount = endRow - startRow + 1;
+      if (step.endColumn) {
+        // COPY-RIGHT: Formula at (outputColumn, startRow), copied across columns
+        Logger.log('[TaskChain] Using copy-right mode: ' + step.outputColumn + ' to ' + step.endColumn);
+        try {
+          var firstCell = sheet.getRange(step.outputColumn + startRow);
+          firstCell.setFormula(formulaSource);
+          successCount = 1;
+
+          if (step.endColumn.toUpperCase() !== step.outputColumn.toUpperCase()) {
+            var nextCol = _nextColumnLetter(step.outputColumn);
+            var destRange = sheet.getRange(nextCol + startRow + ':' + step.endColumn + startRow);
+            firstCell.copyTo(destRange);
+            successCount = _columnDistance(step.outputColumn, step.endColumn);
+          }
+          Logger.log('[TaskChain] ✅ Formula set on ' + step.outputColumn + startRow +
+                     ' and copied right to ' + step.endColumn + startRow + ' (' + successCount + ' columns)');
+        } catch (formulaError) {
+          formulaErrors.push(formulaError.message);
+          Logger.log('[TaskChain] ❌ Copy-right formula error: ' + formulaError.message);
         }
-        Logger.log('[TaskChain] ✅ Formula set on ' + step.outputColumn + startRow + ' and copied to row ' + endRow);
-      } catch (formulaError) {
-        formulaErrors.push(formulaError.message);
-        Logger.log('[TaskChain] ❌ Formula application error: ' + formulaError.message);
+      } else {
+        // STANDARD: Natural Google Sheets formula — set on first row, copy down
+        Logger.log('[TaskChain] Using standard formula mode (copy down)');
+        try {
+          var firstCell = sheet.getRange(step.outputColumn + startRow);
+          firstCell.setFormula(formulaSource);
+          successCount = 1;
+          
+          if (endRow > startRow) {
+            var destRange = sheet.getRange(step.outputColumn + (startRow + 1) + ':' + step.outputColumn + endRow);
+            firstCell.copyTo(destRange);
+            successCount = endRow - startRow + 1;
+          }
+          Logger.log('[TaskChain] ✅ Formula set on ' + step.outputColumn + startRow + ' and copied to row ' + endRow);
+        } catch (formulaError) {
+          formulaErrors.push(formulaError.message);
+          Logger.log('[TaskChain] ❌ Formula application error: ' + formulaError.message);
+        }
       }
       
       // If no formulas were successfully applied, mark as error
@@ -887,10 +917,11 @@ function executeNextStep(chainId, chainStateOrContext) {
         return;
       }
       
-      // POST-VERIFY: Sample first/middle/last cells for errors (not just the first).
-      // If any cell errors, ask the AI model to self-correct (up to 2 retries).
+      // POST-VERIFY: Sample cells for errors. Use column-range verify for copy-right, row-range for copy-down.
       SpreadsheetApp.flush();
-      var verifyResult = _verifyFormulaRange(sheet, step.outputColumn, startRow, endRow);
+      var verifyResult = step.endColumn
+        ? _verifyFormulaColumnRange(sheet, startRow, step.outputColumn, step.endColumn)
+        : _verifyFormulaRange(sheet, step.outputColumn, startRow, endRow);
       if (!verifyResult.ok) {
         var formulaFailureHint = _buildFormulaFailureHint(sheet, formulaSource, startRow, verifyResult.error);
         Logger.log('[TaskChain] ⚠️ Formula produces ' + verifyResult.error + ' in col ' + step.outputColumn + ' | formula: ' + formulaSource +
@@ -913,13 +944,22 @@ function executeNextStep(chainId, chainStateOrContext) {
               var fixedSource = fixedFormula.startsWith('=') ? fixedFormula : '=' + fixedFormula;
               var firstCell = sheet.getRange(step.outputColumn + startRow);
               firstCell.setFormula(fixedSource);
-              if (endRow > startRow) {
+
+              if (step.endColumn) {
+                if (step.endColumn.toUpperCase() !== step.outputColumn.toUpperCase()) {
+                  var nextCol = _nextColumnLetter(step.outputColumn);
+                  var destRange = sheet.getRange(nextCol + startRow + ':' + step.endColumn + startRow);
+                  firstCell.copyTo(destRange);
+                }
+              } else if (endRow > startRow) {
                 var destRange = sheet.getRange(step.outputColumn + (startRow + 1) + ':' + step.outputColumn + endRow);
                 firstCell.copyTo(destRange);
               }
               SpreadsheetApp.flush();
 
-              verifyResult = _verifyFormulaRange(sheet, step.outputColumn, startRow, endRow);
+              verifyResult = step.endColumn
+                ? _verifyFormulaColumnRange(sheet, startRow, step.outputColumn, step.endColumn)
+                : _verifyFormulaRange(sheet, step.outputColumn, startRow, endRow);
               currentFormula = fixedSource;
 
               if (verifyResult.ok) {
@@ -959,19 +999,26 @@ function executeNextStep(chainId, chainStateOrContext) {
       
       chainState.steps[nextStepIndex].status = verifyResult.ok ? 'completed' : 'error';
       chainState.steps[nextStepIndex].completedAt = new Date().toISOString();
-      chainState.steps[nextStepIndex].outputRange = step.outputColumn + startRow + ':' + step.outputColumn + endRow;
+      chainState.steps[nextStepIndex].outputRange = step.endColumn
+        ? step.outputColumn + startRow + ':' + step.endColumn + (endRow || startRow)
+        : step.outputColumn + startRow + ':' + step.outputColumn + endRow;
       var finalFailureHint = (!verifyResult.ok) ? _buildFormulaFailureHint(sheet, formulaSource, startRow) : null;
       chainState.steps[nextStepIndex].error = verifyResult.ok
         ? null
         : ('Formula verification failed: ' + verifyResult.error + ' [' + formulaSource.substring(0, 80) + ']' +
            (finalFailureHint ? ' — Hint: ' + finalFailureHint : ''));
+      var healthStatus = 'ok';
+      if (!verifyResult.ok) {
+        healthStatus = verifyResult.error + (finalFailureHint ? ' — Hint: ' + finalFailureHint : '');
+      } else if (verifyResult.warning) {
+        healthStatus = 'ok-suspicious';
+        chainState.steps[nextStepIndex].warning = '⚠️formula: ' + verifyResult.warning;
+      }
       chainState.steps[nextStepIndex].writeResult = { 
         successCount: successCount, 
         errorCount: formulaErrors.length,
         isFormula: true,
-        formulaHealth: verifyResult.ok
-          ? 'ok'
-          : (verifyResult.error + (finalFailureHint ? ' — Hint: ' + finalFailureHint : '')),
+        formulaHealth: healthStatus,
         formulaText: formulaSource.substring(0, 100)
       };
       saveChainState(chainState);
@@ -1127,6 +1174,69 @@ function onStepComplete(chainId, jobId, results) {
 // ============================================
 // MULTI-SHEET SUPPORT
 // ============================================
+
+// ============================================
+// COLUMN LETTER UTILITIES (for copy-right support)
+// ============================================
+
+function _colLetterToNumber(col) {
+  var result = 0;
+  var upper = col.toUpperCase();
+  for (var i = 0; i < upper.length; i++) {
+    result = result * 26 + (upper.charCodeAt(i) - 64);
+  }
+  return result;
+}
+
+function _numberToColLetter(num) {
+  var result = '';
+  while (num > 0) {
+    var mod = (num - 1) % 26;
+    result = String.fromCharCode(65 + mod) + result;
+    num = Math.floor((num - 1) / 26);
+  }
+  return result;
+}
+
+function _nextColumnLetter(col) {
+  return _numberToColLetter(_colLetterToNumber(col) + 1);
+}
+
+function _columnDistance(startCol, endCol) {
+  return _colLetterToNumber(endCol) - _colLetterToNumber(startCol) + 1;
+}
+
+/**
+ * Verify formula results across a column range (for copy-right).
+ * Samples first, middle, and last columns in the given row.
+ */
+function _verifyFormulaColumnRange(sheet, row, startCol, endCol) {
+  var startNum = _colLetterToNumber(startCol);
+  var endNum = _colLetterToNumber(endCol);
+  var count = endNum - startNum + 1;
+
+  var sampleCols = [startNum];
+  if (count > 2) sampleCols.push(startNum + Math.floor(count / 2));
+  if (count > 1) sampleCols.push(endNum);
+
+  var sampledValues = [];
+  for (var i = 0; i < sampleCols.length; i++) {
+    var colLetter = _numberToColLetter(sampleCols[i]);
+    var cell = sheet.getRange(colLetter + row);
+    var displayValue = cell.getDisplayValue();
+    if (displayValue && (displayValue.indexOf('#') === 0 || displayValue === 'ERROR!')) {
+      return { ok: false, error: displayValue + ' at ' + colLetter + row, errorCell: colLetter + row };
+    }
+    sampledValues.push(cell.getValue());
+  }
+
+  var result = { ok: true };
+  if (sampledValues.length > 0 && sampledValues.every(function(v) { return v === 0 || v === '' || v === null; })) {
+    result.warning = 'All sampled cells evaluate to 0 — possibly wrong cell references';
+    Logger.log('[Verify] ⚠️ $0-suspicious: row ' + row + ' cols ' + startCol + ':' + endCol + ' all sampled values are zero');
+  }
+  return result;
+}
 
 /**
  * Switch to a target sheet by name. Creates the sheet if it doesn't exist.
@@ -1291,14 +1401,22 @@ function _verifyFormulaRange(sheet, column, startRow, endRow) {
     rows.push(endRow);
   }
 
+  var sampledValues = [];
   for (var i = 0; i < rows.length; i++) {
     var result = _verifyFormula(sheet, column + rows[i]);
     if (!result.ok) {
       result.error = (result.error || 'Unknown error') + ' (row ' + rows[i] + ')';
       return result;
     }
+    sampledValues.push(result.value);
   }
-  return { ok: true, formula: '', value: null, error: null };
+
+  var finalResult = { ok: true, formula: '', value: null, error: null };
+  if (sampledValues.length > 0 && sampledValues.every(function(v) { return v === 0 || v === '' || v === null; })) {
+    finalResult.warning = 'All sampled cells evaluate to 0 — possibly wrong cell references';
+    Logger.log('[Verify] ⚠️ $0-suspicious: ' + column + startRow + ':' + column + endRow + ' all sampled values are zero');
+  }
+  return finalResult;
 }
 
 /**
@@ -2033,7 +2151,15 @@ function _requestChainRepair(chainState, holisticScan) {
 
       var firstCell = sheet.getRange(step.outputColumn + startRow);
       firstCell.setFormula(formulaSource);
-      if (endRow > startRow) {
+
+      if (step.endColumn) {
+        if (step.endColumn.toUpperCase() !== step.outputColumn.toUpperCase()) {
+          var nextCol = _nextColumnLetter(step.outputColumn);
+          var destRange = sheet.getRange(nextCol + startRow + ':' + step.endColumn + startRow);
+          firstCell.copyTo(destRange);
+        }
+        Logger.log('[RepairPass] ✅ Copy-right fix applied: ' + step.outputColumn + startRow + ' → ' + step.endColumn + startRow);
+      } else if (endRow > startRow) {
         var destRange = sheet.getRange(step.outputColumn + (startRow + 1) + ':' + step.outputColumn + endRow);
         firstCell.copyTo(destRange);
       }

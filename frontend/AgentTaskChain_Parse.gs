@@ -43,7 +43,7 @@
  * @param {Object} context - Current spreadsheet context
  * @return {Object} { isMultiStep, steps, summary }
  */
-function parseTaskChain(command, context, model) {
+function parseTaskChain(command, context, model, planId) {
   Logger.log('[TaskChain] ========== parseTaskChain() CALLED ==========');
   Logger.log('[TaskChain] Command: ' + (command || 'EMPTY').substring(0, 80));
   
@@ -101,6 +101,11 @@ function parseTaskChain(command, context, model) {
         command: command,
         context: context || {}
       }, parsedChainModel.specificModel);
+    }
+    
+    // Attach planId for real-time progress tracking (sidebar polls a separate endpoint)
+    if (planId) {
+      payload.planId = planId;
     }
     
     Logger.log('[TaskChain] Calling backend with provider: ' + provider + ', specificModel: ' + (parsedChainModel.specificModel || 'default'));
@@ -225,6 +230,155 @@ function parseChainLocally(command) {
     steps: steps,
     summary: 'Multi-step task: ' + steps.length + ' steps',
     estimatedTime: '~' + (steps.length * 2) + ' minutes'
+  };
+}
+
+// ============================================
+// CONTINUATION PARSING
+// ============================================
+
+/**
+ * Request a continuation of an incomplete plan.
+ * Sends the prior steps summary and cell map to the backend,
+ * which runs a second agent call to generate remaining steps.
+ * 
+ * @param {string} originalCommand - The user's original command
+ * @param {Object} continuationCtx - { priorStepsSummary, cellMap } from prior batch
+ * @param {Object} context - Current spreadsheet context
+ * @param {string} model - Model selection string from UI
+ * @return {Object} Parsed chain with additional steps
+ */
+function parseTaskChainContinuation(originalCommand, continuationCtx, context, model, planId) {
+  Logger.log('[TaskChain] ========== parseTaskChainContinuation() CALLED ==========');
+  Logger.log('[TaskChain] Original command: ' + (originalCommand || 'EMPTY').substring(0, 80));
+  Logger.log('[TaskChain] Prior steps summary length: ' + (continuationCtx.priorStepsSummary || '').length);
+  Logger.log('[TaskChain] Cell map length: ' + (continuationCtx.cellMap || '').length);
+  
+  try {
+    var selectedModel = model || getAgentModel() || 'GEMINI';
+    var parsedChainModel = parseModelSelection(selectedModel);
+    var isManagedChain = parsedChainModel.provider === 'MANAGED';
+    var managedChainId = isManagedChain ? parsedChainModel.specificModel : null;
+    var provider = isManagedChain ? 'GEMINI' : parsedChainModel.provider;
+    
+    var payloadData = {
+      command: originalCommand,
+      context: context || {},
+      continuation: {
+        originalCommand: originalCommand,
+        priorStepsSummary: continuationCtx.priorStepsSummary,
+        cellMap: continuationCtx.cellMap
+      }
+    };
+    
+    var payload;
+    if (isManagedChain) {
+      payload = SecureRequest.buildManagedPayload(payloadData, managedChainId);
+    } else {
+      payload = SecureRequest.buildPayloadWithModel(provider, payloadData, parsedChainModel.specificModel);
+    }
+    
+    if (planId) {
+      payload.planId = planId;
+    }
+    
+    Logger.log('[TaskChain] Calling backend continuation with provider: ' + provider);
+    
+    var response = ApiClient.post('AGENT_PARSE_CHAIN', payload);
+    
+    Logger.log('[TaskChain] Continuation response received: ' + (response.steps ? response.steps.length : 0) + ' steps');
+    return response;
+    
+  } catch (e) {
+    Logger.log('[TaskChain] ❌ Continuation API ERROR: ' + e.message);
+    return {
+      isMultiStep: false,
+      steps: [],
+      _continuationError: e.message
+    };
+  }
+}
+
+// ============================================
+// APPEND STEPS TO RUNNING CHAIN
+// ============================================
+
+/**
+ * Append continuation steps to a running chain.
+ * Loads the existing chain state, adds new steps, and saves back.
+ * The execution loop will pick up the new steps naturally.
+ * 
+ * @param {string} chainId - The running chain's ID
+ * @param {Array} newSteps - Steps to append from the continuation call
+ * @param {boolean} [stillPending] - If true, another continuation batch is expected; keeps _continuationPending set
+ * @return {Object} { success, totalSteps, appendedSteps }
+ */
+function appendChainSteps(chainId, newSteps, stillPending) {
+  Logger.log('[TaskChain] ========== appendChainSteps() CALLED ==========');
+  Logger.log('[TaskChain] Chain: ' + chainId + ', new steps: ' + (newSteps ? newSteps.length : 0));
+  
+  if (!chainId || !newSteps || newSteps.length === 0) {
+    return { success: false, error: 'No steps to append' };
+  }
+  
+  var chainState = getChainState(chainId);
+  if (!chainState) {
+    Logger.log('[TaskChain] ❌ Chain not found: ' + chainId);
+    return { success: false, error: 'Chain not found' };
+  }
+  
+  var existingCount = chainState.steps.length;
+  
+  // Append new steps with proper initialization
+  for (var i = 0; i < newSteps.length; i++) {
+    var step = newSteps[i];
+    var stepCopy = {};
+    var stepKeys = Object.keys(step);
+    for (var ki = 0; ki < stepKeys.length; ki++) {
+      stepCopy[stepKeys[ki]] = step[stepKeys[ki]];
+    }
+    
+    stepCopy.id = step.id || ('step_' + (existingCount + i + 1));
+    stepCopy.order = existingCount + i + 1;
+    stepCopy.action = step.action || 'process';
+    stepCopy.description = step.description || '';
+    stepCopy.prompt = step.prompt || step.description || '';
+    stepCopy.options = step.options || step.formatOptions || null;
+    stepCopy.status = 'pending';
+    stepCopy.jobId = null;
+    stepCopy.allJobIds = [];
+    stepCopy.outputRange = null;
+    stepCopy.result = null;
+    stepCopy.error = null;
+    
+    chainState.steps.push(stepCopy);
+  }
+  
+  chainState.totalSteps = chainState.steps.length;
+  
+  if (stillPending) {
+    chainState._continuationPending = true;
+  } else {
+    delete chainState._continuationPending;
+  }
+  
+  saveChainState(chainState);
+  
+  Logger.log('[TaskChain] ✅ Appended ' + newSteps.length + ' steps. Total: ' + chainState.totalSteps);
+  
+  // If the chain was waiting for continuation (all prior steps done), kick off execution
+  var hasPendingSteps = chainState.steps.some(function(s) { return s.status === 'pending'; });
+  var hasRunning = chainState.steps.some(function(s) { return s.status === 'running'; });
+  if (hasPendingSteps && !hasRunning) {
+    Logger.log('[TaskChain] ▶️ Resuming execution with appended steps');
+    executeNextStep(chainState.chainId, chainState);
+  }
+  
+  return {
+    success: true,
+    totalSteps: chainState.totalSteps,
+    appendedSteps: newSteps.length,
+    priorSteps: existingCount
   };
 }
 

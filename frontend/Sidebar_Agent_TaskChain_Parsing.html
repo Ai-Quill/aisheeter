@@ -131,13 +131,22 @@ async function checkForMultiStepCommand(command) {
     // AI classification call to build the workflow.
     // ============================================
     
-    // Call backend to parse the chain
+    // Generate a planId for real-time progress tracking
+    var planId = 'plan_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
+    
+    // Start progress polling before the blocking GAS call
+    startPlanProgressPolling(planId);
+    
+    // Call backend to parse the chain (passes planId for progress tracking)
     const result = await new Promise((resolve, reject) => {
       google.script.run
         .withSuccessHandler(resolve)
         .withFailureHandler(reject)
-        .parseTaskChain(command, enhancedContext, selectedModel);
+        .parseTaskChain(command, enhancedContext, selectedModel, planId);
     });
+    
+    // Stop progress polling — response is here
+    stopPlanProgressPolling();
     
     removeParsingProgress();
     chainParsing = false;
@@ -323,11 +332,35 @@ async function checkForMultiStepCommand(command) {
       currentPlan = result;
       window.currentPlan = result;
       
-      // Render appropriate UI based on result type
-      if (result._usedSDKAgent) {
-        renderProposedWorkflow(result);
+      // Check if the plan is incomplete and needs continuation
+      const isComplete = result._isComplete !== false;
+      const hasContinuation = !isComplete && result._continuationContext;
+      
+      if (hasContinuation) {
+        console.log('🔗 [TaskChain] ⚡ Plan incomplete — auto-executing batch 1 + requesting continuation');
+        
+        // Store continuation context for the parallel call
+        window._pendingContinuation = {
+          originalCommand: command,
+          continuationCtx: result._continuationContext,
+          context: enhancedContext,
+          model: selectedModel,
+          batchOneStepCount: result.steps.length,
+        };
+        
+        // Show the plan with a "continuing..." indicator and auto-execute
+        if (result._usedSDKAgent) {
+          renderProposedWorkflow(result, { autoExecute: true, continuationPending: true });
+        } else {
+          renderChainConfirmation(result, { autoExecute: true, continuationPending: true });
+        }
       } else {
-        renderChainConfirmation(result);
+        // Plan is complete — normal flow: show plan, wait for user to click Run
+        if (result._usedSDKAgent) {
+          renderProposedWorkflow(result);
+        } else {
+          renderChainConfirmation(result);
+        }
       }
       
       return true;
@@ -395,6 +428,115 @@ function recordSuggestionUsage(workflowId, suggestion) {
   });
   
   console.log('🎯 [Suggestions] Recorded usage:', suggestion);
+}
+
+// ============================================
+// PLAN PROGRESS POLLING
+// ============================================
+
+var _planProgressTimer = null;
+var _planProgressUrl = null;
+var _planProgressFallbackPhase = 0;
+var _planProgressStartTime = 0;
+var _planProgressGotReal = false;
+var _planProgressCorsFailCount = 0;
+
+var _FALLBACK_PHASES = [
+  { after: 0, text: 'Understanding your request...' },
+  { after: 10000, text: 'Designing spreadsheet structure...' },
+  { after: 30000, text: 'Planning formulas and calculations...' },
+  { after: 60000, text: 'Adding formatting and charts...' },
+  { after: 90000, text: 'Finalizing plan...' }
+];
+
+function startPlanProgressPolling(planId) {
+  _planProgressStartTime = Date.now();
+  _planProgressFallbackPhase = 0;
+  _planProgressGotReal = false;
+
+  // Show fallback immediately so user sees something within 1s
+  _advanceFallbackPhase();
+
+  // Get the backend URL, then upgrade to real polling
+  google.script.run
+    .withSuccessHandler(function(baseUrl) {
+      if (!baseUrl) {
+        console.log('[PlanProgress] No base URL — staying with fallback phases');
+        return;
+      }
+      _planProgressUrl = baseUrl + '?planId=' + encodeURIComponent(planId);
+      console.log('[PlanProgress] Polling:', _planProgressUrl);
+    })
+    .withFailureHandler(function() {
+      console.warn('[PlanProgress] Failed to get URL — staying with fallback phases');
+    })
+    .getPlanProgressUrl();
+
+  // Single timer: tries real polling if URL is available, falls back to phases otherwise
+  _planProgressTimer = setInterval(function() {
+    if (_planProgressUrl) {
+      _pollPlanProgress();
+    } else {
+      _advanceFallbackPhase();
+    }
+  }, 3000);
+}
+
+function stopPlanProgressPolling() {
+  if (_planProgressTimer) {
+    clearInterval(_planProgressTimer);
+    _planProgressTimer = null;
+  }
+  _planProgressUrl = null;
+  _planProgressGotReal = false;
+  _planProgressCorsFailCount = 0;
+}
+
+function _pollPlanProgress() {
+  if (!_planProgressUrl) {
+    _advanceFallbackPhase();
+    return;
+  }
+
+  fetch(_planProgressUrl)
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      _planProgressCorsFailCount = 0;
+      if (data && data.round > 0) {
+        _planProgressGotReal = true;
+        if (typeof updateThinkingProgress === 'function') {
+          updateThinkingProgress(data);
+        } else if (typeof updateThinkingReasoning === 'function') {
+          var text = 'Step ' + data.round + '/' + data.totalRounds + ': ' + data.description;
+          updateThinkingReasoning(text);
+        }
+      } else {
+        _advanceFallbackPhase();
+      }
+    })
+    .catch(function() {
+      _planProgressCorsFailCount++;
+      if (_planProgressCorsFailCount >= 3) {
+        // CORS is blocked — stop wasting requests, use fallback only
+        _planProgressUrl = null;
+        console.warn('[PlanProgress] CORS blocked (' + _planProgressCorsFailCount + ' failures) — switching to fallback');
+      }
+      _advanceFallbackPhase();
+    });
+}
+
+function _advanceFallbackPhase() {
+  var elapsed = Date.now() - _planProgressStartTime;
+  var text = _FALLBACK_PHASES[0].text;
+  for (var i = _FALLBACK_PHASES.length - 1; i >= 0; i--) {
+    if (elapsed >= _FALLBACK_PHASES[i].after) {
+      text = _FALLBACK_PHASES[i].text;
+      break;
+    }
+  }
+  if (typeof updateThinkingReasoning === 'function') {
+    updateThinkingReasoning(text);
+  }
 }
 
 console.log('📦 Agent TaskChain Parsing module loaded');

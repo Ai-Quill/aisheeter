@@ -101,6 +101,7 @@ var SheetActions_Chart = (function() {
     var chartHeight = config.height || 400;
     var posRow = config.positionRow || 2;
     var posCol = config.positionColumn || (sheet.getLastColumn() + 2);
+    var isTransposed = !!(config.transposeData || step.transposeData);
     
     // ============================================
     // PHASE 1: Build minimal chart (type + ranges + position)
@@ -111,23 +112,34 @@ var SheetActions_Chart = (function() {
       .setOption('width', chartWidth)
       .setOption('height', chartHeight);
     
+    // Horizontal time-series: transpose rows↔columns so rows become series
+    // and the header row becomes X-axis labels.
+    if (isTransposed) {
+      chartBuilder.setTransposeRowsAndColumns(true);
+      chartBuilder.setNumHeaders(1);
+      chartBuilder.setOption('useFirstColumnAsDomain', true);
+      Logger.log('[SheetActions_Chart] Transposed mode: rows as series, header row as X-axis');
+    }
+    
     // For domainColumn+dataColumns charts (multiple separate ranges),
     // we must use MERGE_COLUMNS + setNumHeaders so the chart knows which
     // column is the domain. For single-range (contiguous columns), the chart
     // auto-detects text columns as domain — no MERGE_COLUMNS needed.
     var hasDomainColumn = !!(config.domainColumn || config.xAxisColumn || config.labelsColumn);
     
-    if (chartRanges.length > 1) {
-      // Non-adjacent columns: need MERGE_COLUMNS to combine separate ranges
-      chartBuilder.setMergeStrategy(Charts.ChartMergeStrategy.MERGE_COLUMNS);
-      chartBuilder.setNumHeaders(1);
-      chartBuilder.setOption('useFirstColumnAsDomain', true);
-    } else if (hasDomainColumn) {
-      // Single contiguous range from adjacent domain+data columns:
-      // Explicitly tell the chart to use the first column as domain labels
-      // and setNumHeaders(1) so the header row isn't plotted as data.
-      chartBuilder.setNumHeaders(1);
-      chartBuilder.setOption('useFirstColumnAsDomain', true);
+    if (!isTransposed) {
+      if (chartRanges.length > 1) {
+        // Non-adjacent columns: need MERGE_COLUMNS to combine separate ranges
+        chartBuilder.setMergeStrategy(Charts.ChartMergeStrategy.MERGE_COLUMNS);
+        chartBuilder.setNumHeaders(1);
+        chartBuilder.setOption('useFirstColumnAsDomain', true);
+      } else if (hasDomainColumn) {
+        // Single contiguous range from adjacent domain+data columns:
+        // Explicitly tell the chart to use the first column as domain labels
+        // and setNumHeaders(1) so the header row isn't plotted as data.
+        chartBuilder.setNumHeaders(1);
+        chartBuilder.setOption('useFirstColumnAsDomain', true);
+      }
     }
     
     // Add ranges. For MERGE_COLUMNS, domain is added first.
@@ -231,6 +243,7 @@ var SheetActions_Chart = (function() {
       _applyDualAxisOptions(chartBuilder, config);
     }
     
+    _applySeriesLabelsAndColors(chartBuilder, config);
     _applyAxisOptions(chartBuilder, config, dataRange);
     
     // Build and insert chart
@@ -247,6 +260,71 @@ var SheetActions_Chart = (function() {
       series: config.seriesNames || [],
       dimensions: { width: chartWidth, height: chartHeight }
     };
+  }
+  
+  // ============================================
+  // SERIES LABELS & COLORS (merged with type-specific series config)
+  // ============================================
+  
+  /**
+   * Build a unified series config from seriesNames, colors, seriesTypes,
+   * and secondaryAxis — then apply once. This avoids multiple setOption('series')
+   * calls that overwrite each other.
+   */
+  function _applySeriesLabelsAndColors(chartBuilder, config) {
+    var merged = {};
+    var hasAnything = false;
+    
+    // 1. seriesTypes (combo charts)
+    if (config.seriesTypes && config.seriesTypes.length > 0) {
+      config.seriesTypes.forEach(function(type, idx) {
+        if (!merged[idx]) merged[idx] = {};
+        merged[idx].type = type;
+      });
+      hasAnything = true;
+    }
+    
+    // 2. secondaryAxis
+    if (config.secondaryAxis && config.secondaryAxis.length > 0) {
+      config.secondaryAxis.forEach(function(seriesIndex) {
+        if (!merged[seriesIndex]) merged[seriesIndex] = {};
+        merged[seriesIndex].targetAxisIndex = 1;
+      });
+      hasAnything = true;
+    }
+    
+    // 3. seriesNames (legend labels)
+    if (config.seriesNames && config.seriesNames.length > 0) {
+      config.seriesNames.forEach(function(name, idx) {
+        if (!merged[idx]) merged[idx] = {};
+        merged[idx].labelInLegend = name;
+      });
+      hasAnything = true;
+      Logger.log('[SheetActions_Chart] Series names: ' + config.seriesNames.join(', '));
+    }
+    
+    // 4. colors
+    if (config.colors && config.colors.length > 0) {
+      config.colors.forEach(function(color, idx) {
+        if (!merged[idx]) merged[idx] = {};
+        merged[idx].color = color;
+      });
+      hasAnything = true;
+    }
+    
+    // 5. lineDashStyle (from line chart options)
+    if (config.lineDashStyle) {
+      var numSeries = config.dataColumns ? config.dataColumns.length : 3;
+      for (var i = 0; i < numSeries; i++) {
+        if (!merged[i]) merged[i] = {};
+        merged[i].lineDashStyle = config.lineDashStyle;
+      }
+      hasAnything = true;
+    }
+    
+    if (hasAnything) {
+      chartBuilder.setOption('series', merged);
+    }
   }
   
   // ============================================
@@ -329,16 +407,6 @@ var SheetActions_Chart = (function() {
     // Handle null values
     if (config.interpolateNulls) {
       chartBuilder.setOption('interpolateNulls', true);
-    }
-    
-    // Line dash style
-    if (config.lineDashStyle) {
-      var numSeries = config.dataColumns ? config.dataColumns.length : (dataRange.getNumColumns() - 1);
-      var seriesConfig = {};
-      for (var i = 0; i < numSeries; i++) {
-        seriesConfig[i] = { lineDashStyle: config.lineDashStyle };
-      }
-      chartBuilder.setOption('series', seriesConfig);
     }
     
     // Focus target
@@ -510,16 +578,6 @@ var SheetActions_Chart = (function() {
    * Apply COMBO chart specific options (NEW)
    */
   function _applyComboChartOptions(chartBuilder, config) {
-    // Series types for combo charts
-    if (config.seriesTypes) {
-      var seriesConfig = {};
-      config.seriesTypes.forEach(function(type, idx) {
-        seriesConfig[idx] = seriesConfig[idx] || {};
-        seriesConfig[idx].type = type; // 'line', 'bars', 'area'
-      });
-      chartBuilder.setOption('series', seriesConfig);
-    }
-    
     chartBuilder.setOption('focusTarget', config.focusTarget || 'category');
     
     Logger.log('[SheetActions_Chart] Combo chart options applied');
@@ -529,14 +587,7 @@ var SheetActions_Chart = (function() {
    * Apply dual axis support (NEW)
    */
   function _applyDualAxisOptions(chartBuilder, config) {
-    var seriesConfig = {};
-    config.secondaryAxis.forEach(function(seriesIndex) {
-      seriesConfig[seriesIndex] = seriesConfig[seriesIndex] || {};
-      seriesConfig[seriesIndex].targetAxisIndex = 1;
-    });
-    chartBuilder.setOption('series', seriesConfig);
-    
-    // Configure secondary axis
+    // Configure secondary axis (series config is handled by _applySeriesLabelsAndColors)
     chartBuilder.setOption('vAxes', {
       0: { title: config.yAxisTitle || '' },
       1: { title: config.secondaryAxisTitle || '' }
@@ -667,6 +718,12 @@ var SheetActions_Chart = (function() {
    * @return {string[]} Array of A1-notation range strings (domain first)
    */
   function _resolveChartRanges(sheet, config, step) {
+    // Priority 1: Explicit dataRange (used for horizontal time-series charts)
+    if (config.dataRange) {
+      Logger.log('[SheetActions_Chart] Using explicit dataRange: ' + config.dataRange);
+      return [config.dataRange];
+    }
+    
     var domainColumn = config.domainColumn || config.xAxisColumn || config.labelsColumn;
     var dataColumns = config.dataColumns;
     if (!dataColumns && config.valuesColumn) {
@@ -674,15 +731,18 @@ var SheetActions_Chart = (function() {
     }
     
     if (domainColumn && dataColumns && dataColumns.length > 0) {
-      // Use DOMAIN column for row boundary detection.
-      // In aggregation workflows (writeData + formula + chart), the formula step may
-      // apply formulas beyond the writeData rows (returning 0/blank for rows without
-      // domain values). Using the domain column ensures the chart only includes rows
-      // with actual category labels.
-      var domainColIdx = SheetActions_Utils.letterToColumn(domainColumn);
-      var dataInfo = SheetActions_Utils.detectDataBoundaries(sheet, domainColIdx, domainColIdx);
-      var startRow = dataInfo.startRow;
-      var endRow = dataInfo.endRow;
+      var startRow, endRow;
+      
+      if (config.startRow && config.endRow) {
+        startRow = config.startRow;
+        endRow = config.endRow;
+        Logger.log('[SheetActions_Chart] Using explicit row range: ' + startRow + '-' + endRow);
+      } else {
+        var domainColIdx = SheetActions_Utils.letterToColumn(domainColumn);
+        var dataInfo = SheetActions_Utils.detectDataBoundaries(sheet, domainColIdx, domainColIdx);
+        startRow = dataInfo.startRow;
+        endRow = dataInfo.endRow;
+      }
       
       Logger.log('[SheetActions_Chart] Domain boundaries: rows ' + startRow + '-' + endRow);
       

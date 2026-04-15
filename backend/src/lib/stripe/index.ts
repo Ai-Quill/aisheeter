@@ -11,10 +11,10 @@
  * - MANAGED_GOOGLE_API_KEY: Platform Google key for managed credits
  * - MANAGED_GROQ_API_KEY: Platform Groq key for managed credits
  * 
- * Pricing Tiers:
- * - Free: 300 BYOK requests/month + 50 managed AI queries (~$0.015 cap)
- * - Pro: $14.99/mo - Unlimited BYOK + $4.99/mo managed AI credits
- * - Legacy: Unlimited free forever (existing users) — BYOK only, no managed credits
+ * Pricing Tiers (Integer Credits):
+ * - Free: 100 managed AI credits/month + 600 BYOK requests/month
+ * - Pro: $14.99/mo - 1,000 managed AI credits/month + unlimited BYOK
+ * - Legacy: Unlimited BYOK forever (existing users) — no managed credits
  */
 
 import Stripe from 'stripe';
@@ -25,39 +25,36 @@ if (!process.env.STRIPE_SECRET_KEY) {
 
 export const stripe = process.env.STRIPE_SECRET_KEY 
   ? new Stripe(process.env.STRIPE_SECRET_KEY, {
-      apiVersion: '2026-02-25.clover',
+      apiVersion: '2025-12-15.clover',
       typescript: true,
     })
   : null;
 
-// Pricing configuration
 export const PRICING_TIERS = {
   free: {
     name: 'Free',
     priceMonthly: 0,
     priceId: null,
-    requestLimit: 300,
-    managedCreditsCap: 0.015,  // ~50 queries on mini models
+    byokRequestLimit: 600,
+    monthlyCredits: 100,
     features: [
-      '50 free AI queries/month (no setup needed!)',
-      '300 BYOK queries/month',
-      'All features included',
-      'BYOK (your own API keys)',
-      'Community support',
+      '100 AI credits/month (no setup needed!)',
+      '600 BYOK requests/month',
+      'Agent Mode + All Skills',
+      'Mini AI models included',
     ]
   },
   pro: {
     name: 'Pro',
     priceMonthly: 14.99,
     priceId: process.env.STRIPE_PRICE_ID_PRO || null,
-    requestLimit: -1,  // Unlimited
-    managedCreditsCap: 4.99,   // $4.99/month managed AI credits
+    byokRequestLimit: -1,
+    monthlyCredits: 1000,
     features: [
-      '$4.99/mo managed AI credits included',
-      'GPT-5, Claude Sonnet 4.5, Gemini 2.5 Pro',
-      'Unlimited BYOK queries',
-      'BYOK (your own API keys)',
-      'Priority email support',
+      '1,000 AI credits/month',
+      'Unlimited BYOK requests',
+      'All AI models (GPT-5, Sonnet 4.5, Gemini Pro)',
+      'Priority support',
       'Persistent conversation memory',
       'Early access to new features',
     ]
@@ -66,35 +63,35 @@ export const PRICING_TIERS = {
     name: 'Legacy',
     priceMonthly: 0,
     priceId: null,
-    requestLimit: -1,  // Unlimited
-    managedCreditsCap: 0,      // Legacy = grandfathered free users, BYOK only, no managed credits
-    features: ['Grandfathered unlimited BYOK access', 'All features included', 'Thank you for being an early user! ❤️']
+    byokRequestLimit: -1,
+    monthlyCredits: 0,
+    features: ['Grandfathered unlimited BYOK access', 'All features included']
   }
 } as const;
 
 export type PlanTier = 'free' | 'pro' | 'legacy';
 
-// Request limits per tier
+export function getMonthlyCreditsForTier(tier: PlanTier): number {
+  return PRICING_TIERS[tier]?.monthlyCredits ?? 0;
+}
+
 export function getRequestLimitForTier(tier: PlanTier): number {
   switch (tier) {
-    case 'free': return 500;
-    case 'pro': return -1;     // Unlimited
-    case 'legacy': return -1;  // Unlimited
+    case 'free': return 600;
+    case 'pro': return -1;
+    case 'legacy': return -1;
     default: return 0;
   }
 }
 
-// Check if tier has unlimited access
 export function hasUnlimitedAccess(tier: PlanTier): boolean {
   return tier === 'legacy' || tier === 'pro';
 }
 
-// Legacy function - kept for backward compatibility
 export function getCreditsForTier(tier: PlanTier): number {
-  return getRequestLimitForTier(tier);
+  return getMonthlyCreditsForTier(tier);
 }
 
-// Legacy function - kept for backward compatibility  
 export function hasBYOKPrivileges(tier: PlanTier): boolean {
-  return true; // All tiers use BYOK now
+  return true;
 }

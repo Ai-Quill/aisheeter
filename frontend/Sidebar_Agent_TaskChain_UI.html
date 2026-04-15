@@ -63,8 +63,8 @@ function removeParsingProgress() {
  * 
  * @param {Object} chain - Parsed task chain
  */
-function renderChainConfirmation(chain) {
-  // Display in messages area instead of separate modal
+function renderChainConfirmation(chain, options) {
+  options = options || {};
   const messagesDiv = document.getElementById('agentMessages');
   if (!messagesDiv) return;
   
@@ -80,14 +80,19 @@ function renderChainConfirmation(chain) {
     </div>
   `).join('');
   
+  const continuationHtml = options.continuationPending 
+    ? '<div class="continuation-indicator" id="continuationIndicator"><span class="continuation-spinner"></span> Planning remaining steps...</div>'
+    : '';
+  
   const html = `
     <div class="workflow-card" data-type="chain-confirmation">
       <div class="workflow-accent"></div>
       <p class="workflow-summary">${escapeHtml(chain.summary || 'Ready to execute the following steps:')}</p>
       
-      <div class="workflow-timeline">
+      <div class="workflow-timeline" id="workflowTimeline">
         ${stepsHtml}
       </div>
+      ${continuationHtml}
       
       <label class="flex items-center gap-2 mb-2 cursor-pointer">
         <input type="checkbox" id="addHeadersCheckbox" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500" checked>
@@ -103,6 +108,10 @@ function renderChainConfirmation(chain) {
   
   messagesDiv.insertAdjacentHTML('beforeend', html);
   autoScrollMessages();
+  
+  if (options.autoExecute) {
+    setTimeout(function() { autoExecuteWithContinuation(); }, 100);
+  }
 }
 
 /**
@@ -111,7 +120,8 @@ function renderChainConfirmation(chain) {
  * 
  * @param {Object} result - AI analysis result with proposed steps
  */
-function renderProposedWorkflow(result) {
+function renderProposedWorkflow(result, options) {
+  options = options || {};
   const messagesDiv = document.getElementById('agentMessages');
   if (!messagesDiv) return;
   
@@ -147,14 +157,19 @@ function renderProposedWorkflow(result) {
   `;
   }).join('');
   
+  const continuationHtml = options.continuationPending 
+    ? '<div class="continuation-indicator" id="continuationIndicator"><span class="continuation-spinner"></span> Planning remaining steps...</div>'
+    : '';
+  
   const html = `
     <div class="workflow-card" data-type="chain-confirmation">
       <div class="workflow-accent"></div>
       <p class="workflow-summary">${escapeHtml(result.summary)}</p>
       
-      <div class="workflow-timeline">
+      <div class="workflow-timeline" id="workflowTimeline">
         ${stepsHtml}
       </div>
+      ${continuationHtml}
       
       <label class="flex items-center gap-2 mb-2 cursor-pointer">
         <input type="checkbox" id="addHeadersCheckbox" class="rounded border-gray-300 text-emerald-600 focus:ring-emerald-500" checked>
@@ -170,6 +185,10 @@ function renderProposedWorkflow(result) {
   
   messagesDiv.insertAdjacentHTML('beforeend', html);
   autoScrollMessages();
+  
+  if (options.autoExecute) {
+    setTimeout(function() { autoExecuteWithContinuation(); }, 100);
+  }
 }
 
 // ============================================
@@ -220,6 +239,42 @@ function renderChainProgress(chain) {
   `;
   
   messagesDiv.insertAdjacentHTML('beforeend', html);
+  autoScrollMessages();
+}
+
+/**
+ * Append new step dots to the progress UI when continuation steps arrive.
+ * Called after appendChainSteps succeeds.
+ * 
+ * @param {Array} newSteps - The continuation steps
+ * @param {number} offset - Index offset (number of prior steps)
+ */
+function appendProgressSteps(newSteps, offset) {
+  const container = document.querySelector('.chain-progress-steps');
+  if (!container) return;
+  
+  // Add a connector to the last existing step if it doesn't have one
+  const lastStep = container.querySelector('.chain-step:last-child');
+  if (lastStep && !lastStep.querySelector('.chain-step-connector')) {
+    const connector = document.createElement('div');
+    connector.className = 'chain-step-connector';
+    lastStep.insertBefore(connector, lastStep.querySelector('.chain-step-desc'));
+  }
+  
+  const html = newSteps.map((step, idx) => {
+    const globalIdx = offset + idx;
+    const isLast = idx === newSteps.length - 1;
+    return `
+    <div class="chain-step" id="chain-step-${globalIdx}">
+      <div class="chain-step-dot chain-step-pending" id="chain-step-dot-${globalIdx}"></div>
+      ${!isLast ? '<div class="chain-step-connector"></div>' : ''}
+      <span class="chain-step-desc">${escapeHtml(step.description)}</span>
+      <span class="chain-step-time" id="chain-step-time-${globalIdx}"></span>
+    </div>
+    `;
+  }).join('');
+  
+  container.insertAdjacentHTML('beforeend', html);
   autoScrollMessages();
 }
 

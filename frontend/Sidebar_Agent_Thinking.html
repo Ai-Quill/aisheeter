@@ -117,6 +117,34 @@ function updateThinkingReasoning(text) {
 }
 
 /**
+ * Update thinking indicator with structured agent progress.
+ * Shows real-time round count and tool description from the backend.
+ * @param {Object} data - { round, totalRounds, tools, description }
+ */
+function updateThinkingProgress(data) {
+  if (!data || !_thinkingState.visible) return;
+
+  var pct = Math.round((data.round / (data.totalRounds || 25)) * 100);
+  var labelText = 'Step ' + data.round + '/' + data.totalRounds;
+  var descText = data.description || 'Processing...';
+
+  // Update label
+  var label = document.getElementById('thinkingIndicator')?.querySelector('.thinking-label');
+  if (label) label.textContent = labelText;
+
+  // Drive the CSS progress bar to the real percentage
+  var bar = document.getElementById('thinkingIndicator')?.querySelector('.thinking-progress-bar');
+  if (bar) {
+    bar.style.animation = 'none';
+    bar.style.width = pct + '%';
+    bar.style.transition = 'width 0.6s ease';
+  }
+
+  // Show the description as reasoning preview/teaser
+  updateThinkingReasoning(descText);
+}
+
+/**
  * Hide thinking indicator and return accumulated reasoning
  * @returns {string|null} The reasoning text accumulated during thinking
  */

@@ -46,6 +46,14 @@ export const parseChainBodySchema = z.object({
   userEmail: emailSchema,
   // Conversation
   conversationHistory: z.array(z.unknown()).max(50).optional(),
+  // Continuation: sent when the first batch was incomplete and needs more steps
+  continuation: z.object({
+    originalCommand: z.string().min(1).max(10000),
+    priorStepsSummary: z.string().max(50000),
+    cellMap: z.string().max(50000),
+  }).optional(),
+  // Progress tracking: sidebar polls /api/agent/plan-progress?planId=... for live updates
+  planId: z.string().max(64).optional(),
 }).strict().refine(
   data => !!(data.encryptedApiKey || data.managedMode),
   { message: 'Either encryptedApiKey or managedMode=true is required' }

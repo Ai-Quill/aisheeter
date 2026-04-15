@@ -311,6 +311,15 @@ function getJobStreamUrl(jobIds) {
   };
 }
 
+/**
+ * Get the base URL for the plan-progress polling endpoint.
+ * The sidebar uses this to poll real-time agent progress via fetch().
+ * @return {string} Full URL prefix, e.g. "https://aisheet.vercel.app/api/agent/plan-progress"
+ */
+function getPlanProgressUrl() {
+  return Config.getBaseUrl() + '/api/agent/plan-progress';
+}
+
 // ============================================
 // TASK HISTORY
 // ============================================
@@ -2020,7 +2029,7 @@ function applyFormulaToRange(formulaTemplate, inputCol, outputCol, startRow, end
 
 /**
  * Get user's subscription and usage information
- * @return {Object} { tier, remaining, limit, isUnlimited, canProceed, needsUpgrade }
+ * @return {Object} { tier, remaining, limit, isUnlimited, canProceed, needsUpgrade, managedCredits, managedModels }
  */
 function getUserSubscription() {
   try {
@@ -2035,26 +2044,24 @@ function getUserSubscription() {
     return {
       tier: result.tier || 'free',
       remaining: result.remaining || 0,
-      limit: result.limit || 500,
+      limit: result.limit || 600,
       isUnlimited: result.isUnlimited || false,
       canProceed: result.canProceed !== false,
       needsUpgrade: result.needsUpgrade || false,
       reason: result.reason || null,
-      // Managed AI credit info (new)
-      managedCredits: result.managedCredits || { canUse: false, used_usd: 0, cap_usd: 0, remaining_usd: 0 },
+      managedCredits: result.managedCredits || { canUse: false, remaining: 0, limit: 0, used: 0 },
       managedModels: result.managedModels || []
     };
   } catch (e) {
     Logger.log('Error getting subscription: ' + e);
-    // Return default free tier on error
     return { 
       tier: 'free', 
-      remaining: 300, 
-      limit: 300,
+      remaining: 600, 
+      limit: 600,
       isUnlimited: false,
       canProceed: true,
       needsUpgrade: false,
-      managedCredits: { canUse: true, used_usd: 0, cap_usd: 0.015, remaining_usd: 0.015 },
+      managedCredits: { canUse: true, remaining: 100, limit: 100, used: 0 },
       managedModels: []
     };
   }

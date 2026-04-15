@@ -2,10 +2,8 @@
  * Feature Gating & Request Management
  * 
  * Controls access to features based on user's subscription tier.
- * Enforces request limits per tier:
- * - Free: 300 requests/month
- * - Pro: Unlimited
- * - Legacy: Unlimited (grandfathered)
+ * BYOK request limits: Free 600/month, Pro/Legacy unlimited.
+ * Managed AI credits: Free 100/month, Pro 1000/month, Legacy 0.
  */
 
 import { sql } from '@/lib/db';
@@ -27,9 +25,6 @@ export interface AccessCheck {
   userAccess?: UserAccess;
 }
 
-/**
- * Get user's access level and credits
- */
 export async function getUserAccess(userIdOrEmail: string): Promise<UserAccess | null> {
   const isEmail = userIdOrEmail.includes('@');
   
@@ -54,10 +49,6 @@ export async function getUserAccess(userIdOrEmail: string): Promise<UserAccess |
   };
 }
 
-/**
- * Check if user can perform a query
- * @param estimatedCredits - Estimated credits for this operation
- */
 export async function canPerformQuery(
   userIdOrEmail: string, 
   estimatedCredits: number = 1
@@ -68,12 +59,10 @@ export async function canPerformQuery(
     return { allowed: false, reason: 'User not found' };
   }
 
-  // BYOK users (legacy, pro) have unlimited access
   if (access.hasBYOK) {
     return { allowed: true, userAccess: access };
   }
 
-  // Check credits
   if (access.creditsBalance < estimatedCredits) {
     return { 
       allowed: false, 
@@ -85,9 +74,6 @@ export async function canPerformQuery(
   return { allowed: true, userAccess: access };
 }
 
-/**
- * Check if user can create async jobs
- */
 export async function canCreateJob(
   userIdOrEmail: string,
   rowCount: number
@@ -98,11 +84,10 @@ export async function canCreateJob(
     return { allowed: false, reason: 'User not found' };
   }
 
-  // Job limits by tier (simplified to free/pro/legacy)
   const dailyJobLimits: Record<PlanTier, number> = {
-    free: 3,       // Limited async jobs on free tier
-    pro: -1,       // Unlimited
-    legacy: -1     // Unlimited
+    free: 3,
+    pro: -1,
+    legacy: -1
   };
 
   const jobLimit = dailyJobLimits[access.tier];
@@ -115,7 +100,6 @@ export async function canCreateJob(
     };
   }
 
-  // Check daily job count (skip for unlimited tiers)
   if (jobLimit > 0) {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -134,11 +118,10 @@ export async function canCreateJob(
     }
   }
 
-  // Row count limits (simplified to free/pro/legacy)
   const maxRowsPerJob: Record<PlanTier, number> = {
-    free: 50,      // Limited rows on free tier
-    pro: 1000,     // Pro users get more
-    legacy: 1000   // Legacy users grandfathered
+    free: 50,
+    pro: 1000,
+    legacy: 1000
   };
 
   if (rowCount > maxRowsPerJob[access.tier]) {
@@ -152,9 +135,6 @@ export async function canCreateJob(
   return { allowed: true, userAccess: access };
 }
 
-/**
- * Deduct credits from user (for managed credits, not BYOK)
- */
 export async function deductCredits(
   userId: string, 
   amount: number
@@ -169,29 +149,23 @@ export async function deductCredits(
   return { success: true, newBalance: result.new_balance || 0 };
 }
 
-/**
- * Check if user has access to a specific model
- */
 export function canUseModel(tier: PlanTier, model: string): boolean {
-  // Premium models restricted by tier
   const premiumModels = [
     'gpt-5.2',
     'claude-opus-4-5',
     'gemini-3-pro'
   ];
 
-  // Free tier: only basic models
   if (tier === 'free') {
     return !premiumModels.includes(model);
   }
 
-  // All paid tiers get all models
   return true;
 }
 
 /**
- * Check if user can perform a request (new request-based system)
- * Returns: { allowed: boolean, remaining: number, limit: number, tier: PlanTier }
+ * Check if user can perform a BYOK request.
+ * Free: 600/month, Pro/Legacy: unlimited.
  */
 export async function canPerformRequest(
   userIdOrEmail: string
@@ -221,23 +195,20 @@ export async function canPerformRequest(
   const tier = (data.plan_tier || 'free') as PlanTier;
   const limit = getRequestLimitForTier(tier);
 
-  // Legacy and Pro users have unlimited
   if (tier === 'legacy' || tier === 'pro' || hasUnlimitedAccess(tier)) {
     return { 
       allowed: true,
-      remaining: -1,  // Unlimited
+      remaining: -1,
       limit: -1,
       tier
     };
   }
 
-  // Check if period has ended (auto-reset happens in database function)
   const periodEnd = new Date(data.period_end);
   const now = new Date();
   
   let used = data.requests_this_period || 0;
   
-  // If period ended, count will be reset by database function
   if (periodEnd < now) {
     used = 0;
   }
@@ -248,7 +219,7 @@ export async function canPerformRequest(
   if (!canProceed) {
     return { 
       allowed: false, 
-      reason: `Monthly limit reached (${limit} requests). Upgrade to Pro for unlimited access!`,
+      reason: `Monthly BYOK limit reached (${limit} requests). Upgrade to Pro for unlimited access!`,
       remaining: 0,
       limit,
       tier
@@ -263,9 +234,6 @@ export async function canPerformRequest(
   };
 }
 
-/**
- * Increment user's request count
- */
 export async function incrementRequestCount(userId: string): Promise<void> {
   try {
     await sql`SELECT increment_request_count(${userId})`;

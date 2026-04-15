@@ -1971,6 +1971,30 @@
     flex-direction: column;
   }
 
+  .continuation-indicator {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    margin-top: 4px;
+    font-size: 11px;
+    color: #6B7280;
+    background: #F9FAFB;
+    border-radius: 6px;
+    border: 1px dashed #D1D5DB;
+  }
+
+  .continuation-spinner {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border: 2px solid #D1D5DB;
+    border-top-color: #6B7280;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    flex-shrink: 0;
+  }
+
   .chain-step {
     display: flex;
     align-items: center;

@@ -22,6 +22,8 @@ const ALLOWED_ORIGINS = [
   'https://aisheeter.com',
   // Vercel preview deployments
   /^https:\/\/ai-sheeter-.*\.vercel\.app$/,
+  // GAS sidebar iframes (sidebar fetch() calls for plan progress polling)
+  /^https:\/\/.*-script\.googleusercontent\.com$/,
 ];
 
 /**

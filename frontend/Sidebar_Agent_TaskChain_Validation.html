@@ -295,14 +295,17 @@ function validateCurrentPlan() {
   // Require explicit step-level targeting when global inputRange is missing.
   // This prevents accidental execution against active selection fallback.
   if (currentPlan && currentPlan.steps) {
-    var allStepsResolvable = currentPlan.steps.every(function(s) {
-      return _stepHasResolvableRange(s);
+    var failedSteps = [];
+    currentPlan.steps.forEach(function(s, idx) {
+      if (!_stepHasResolvableRange(s)) {
+        failedSteps.push('Step ' + (idx + 1) + ' [' + (s.action || '?') + ']');
+      }
     });
-    if (allStepsResolvable) {
+    if (failedSteps.length === 0) {
       console.log('✅ [Validation] No global range, but all steps contain explicit ranges');
       return true;
     }
-    console.log('❌ [Validation] Missing global inputRange and at least one step lacks explicit range/target');
+    console.log('❌ [Validation] Missing global inputRange and these steps lack explicit range/target:', failedSteps);
   }
   
   return false;
@@ -326,9 +329,10 @@ function _stepHasResolvableRange(step) {
   var action = step.action || '';
   var cfg = step.config || {};
   
-  // writeData can target by startCell/data payload without a prior selected range.
+  // writeData can target by startCell/data/range payload without a prior selected range.
   if (action === 'writeData') {
-    return !!(step.startCell || cfg.startCell || (Array.isArray(step.data) && step.data.length > 0) || (Array.isArray(cfg.data) && cfg.data.length > 0));
+    return !!(step.startCell || cfg.startCell || step.range || cfg.range ||
+              (Array.isArray(step.data) && step.data.length > 0) || (Array.isArray(cfg.data) && cfg.data.length > 0));
   }
   
   // Formula needs at least an output column; row bounds are inferred at execution time if missing.
@@ -336,8 +340,22 @@ function _stepHasResolvableRange(step) {
     return !!(step.outputColumn || cfg.outputColumn);
   }
   
+  // Table action uses startCell/data like writeData
+  if (action === 'table') {
+    return !!(step.startCell || cfg.startCell || step.range || cfg.range ||
+              (Array.isArray(step.data) && step.data.length > 0) || (Array.isArray(cfg.data) && cfg.data.length > 0));
+  }
+
+  // conditionalFormat may have ranges only inside rules[], not at top level
+  if (action === 'conditionalFormat') {
+    if (step.range || cfg.range || step.dataRange || cfg.dataRange) return true;
+    var rules = step.rules || cfg.rules;
+    if (Array.isArray(rules) && rules.length > 0) return true;
+    return false;
+  }
+
   // Most sheet actions need an explicit range/columns when no global input range exists.
-  if (['chart', 'format', 'conditionalFormat', 'dataValidation', 'filter', 'table'].includes(action)) {
+  if (['chart', 'format', 'dataValidation', 'filter'].includes(action)) {
     if (step.range || cfg.range || step.dataRange || cfg.dataRange) return true;
     if (action === 'format' && _operationsContainRanges(step, cfg)) return true;
     if (action === 'chart') {

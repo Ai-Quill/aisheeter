@@ -109,6 +109,7 @@ function continueChainExecution() {
       console.log('🔗 [ExecuteChain] Success:', result);
       if (result.success) {
         console.log('🔗 [ExecuteChain] Chain started:', result.chainId);
+        window._activeChainId = result.chainId;
         pollChainProgress(result.chainId);
       } else {
         showError(result.error || 'Failed to start chain');
@@ -658,6 +659,152 @@ function retryFailedSteps(chainId) {
       enableChainButtons();
     })
     .retryFailedChainSteps(chainId);
+}
+
+// ============================================
+// CONTINUATION: AUTO-EXECUTE + RECURSIVE BATCH PLANNING
+// ============================================
+
+var MAX_CONTINUATION_BATCHES = 5;
+
+/**
+ * Auto-execute the first batch and request continuation in parallel.
+ * Called when the backend returns _isComplete=false.
+ * 
+ * If batch 2 is also incomplete, it chains into batch 3, etc.
+ * Safety cap at MAX_CONTINUATION_BATCHES to prevent runaway loops.
+ */
+function autoExecuteWithContinuation() {
+  var pending = window._pendingContinuation;
+  if (!pending) {
+    console.warn('🔗 [Continuation] No pending continuation found — executing normally');
+    executeChain();
+    return;
+  }
+  
+  console.log('🔗 [Continuation] Starting auto-execute + parallel continuation');
+  console.log('🔗 [Continuation] Batch 1 steps:', pending.batchOneStepCount);
+  
+  if (currentChain) {
+    currentChain._continuationPending = true;
+  }
+  
+  executeChain();
+  
+  delete window._pendingContinuation;
+  _requestContinuationBatch(pending, 2);
+}
+
+/**
+ * Request a continuation batch from the backend and append results.
+ * Recursively chains into the next batch if the result is still incomplete.
+ */
+function _requestContinuationBatch(pending, batchNumber) {
+  if (batchNumber > MAX_CONTINUATION_BATCHES + 1) {
+    console.warn('🔗 [Continuation] Safety cap reached (' + MAX_CONTINUATION_BATCHES + ' continuation batches). Finalizing.');
+    _clearContinuationIndicator();
+    return;
+  }
+  
+  console.log('🔗 [Continuation] Requesting batch ' + batchNumber + '...');
+  
+  google.script.run
+    .withSuccessHandler(function(contResult) {
+      console.log('🔗 [Continuation] Batch ' + batchNumber + ': ' + (contResult && contResult.steps ? contResult.steps.length : 0) + ' steps');
+      
+      if (!contResult || !contResult.steps || contResult.steps.length === 0) {
+        console.log('🔗 [Continuation] No additional steps from batch ' + batchNumber);
+        _clearContinuationIndicator();
+        return;
+      }
+      
+      if (typeof normalizeAndValidateSteps === 'function') {
+        var validation = normalizeAndValidateSteps(contResult.steps);
+        if (!validation.valid) {
+          console.warn('🔗 [Continuation] Validation failed for batch ' + batchNumber + ':', validation.blockingReasons);
+          _clearContinuationIndicator();
+          return;
+        }
+      }
+      
+      var needsMore = contResult._isComplete === false && !!contResult._continuationContext;
+      
+      _waitForChainIdAndAppend(contResult, needsMore, pending, batchNumber);
+    })
+    .withFailureHandler(function(err) {
+      console.error('🔗 [Continuation] Batch ' + batchNumber + ' failed:', err);
+      var indicator = document.getElementById('continuationIndicator');
+      if (indicator) {
+        indicator.innerHTML = '<span style="color: #b45309;">Continuation failed — partial plan executing</span>';
+      }
+    })
+    .parseTaskChainContinuation(
+      pending.originalCommand,
+      pending.continuationCtx,
+      pending.context,
+      pending.model,
+      'plan_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8)
+    );
+}
+
+/**
+ * Wait for _activeChainId then append steps. Chains into next batch if needsMore.
+ */
+function _waitForChainIdAndAppend(contResult, needsMore, pending, batchNumber) {
+  var retriesLeft = 20;
+  
+  function poll() {
+    var chainId = window._activeChainId;
+    if (!chainId) {
+      if (retriesLeft > 0) {
+        retriesLeft--;
+        setTimeout(poll, 500);
+        return;
+      }
+      console.warn('🔗 [Continuation] No active chain ID — cannot append batch ' + batchNumber);
+      return;
+    }
+    
+    google.script.run
+      .withSuccessHandler(function(appendResult) {
+        console.log('🔗 [Continuation] Batch ' + batchNumber + ' appended:', appendResult);
+        
+        if (appendResult && appendResult.success) {
+          if (currentChain && currentChain.steps) {
+            currentChain.steps = currentChain.steps.concat(contResult.steps);
+            currentChain.totalSteps = currentChain.steps.length;
+          }
+          if (typeof appendProgressSteps === 'function') {
+            appendProgressSteps(contResult.steps, appendResult.priorSteps);
+          }
+          showNotification('+' + contResult.steps.length + ' steps added (batch ' + batchNumber + ')', 'info');
+        }
+        
+        if (needsMore) {
+          console.log('🔗 [Continuation] Batch ' + batchNumber + ' incomplete — requesting batch ' + (batchNumber + 1));
+          _requestContinuationBatch({
+            originalCommand: pending.originalCommand,
+            continuationCtx: contResult._continuationContext,
+            context: pending.context,
+            model: pending.model
+          }, batchNumber + 1);
+        } else {
+          console.log('🔗 [Continuation] Plan complete after batch ' + batchNumber);
+          _clearContinuationIndicator();
+        }
+      })
+      .withFailureHandler(function(err) {
+        console.error('🔗 [Continuation] Failed to append batch ' + batchNumber + ':', err);
+      })
+      .appendChainSteps(chainId, contResult.steps, !!needsMore);
+  }
+  
+  poll();
+}
+
+function _clearContinuationIndicator() {
+  var indicator = document.getElementById('continuationIndicator');
+  if (indicator) indicator.remove();
 }
 
 console.log('📦 Agent TaskChain Execution module loaded');

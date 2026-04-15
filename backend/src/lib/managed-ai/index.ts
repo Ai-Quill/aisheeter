@@ -2,18 +2,15 @@
  * Managed AI Module - Pooled API Key Service
  * 
  * Provides managed AI access using platform-owned API keys.
- * Users don't need their own keys — credits are tracked per user.
+ * Users don't need their own keys — integer credits are tracked per user.
  * 
  * Tiers:
- * - Free: Mini models only (GPT-5 Mini, Gemini 2.5 Flash, Haiku, Llama 4 Scout)
- *         ~50 queries/month ($0.015 cap)
- * - Pro:  Mini + mid-tier (adds GPT-5, Claude Sonnet 4.5, Gemini 2.5 Pro)
- *         $4.99/month cap
- * - Legacy: Grandfathered free users with unlimited BYOK access.
- *           No managed credits — they use their own API keys.
+ * - Free: Mini models only, 100 credits/month (1 credit per mini query)
+ * - Pro:  Mini + mid-tier, 1,000 credits/month (1-8 credits per query)
+ * - Legacy: No managed credits — they use their own API keys (BYOK).
  * 
- * Cost tracking: Per-query cost calculated from actual token usage,
- * debited from user's monthly managed credit balance.
+ * Credit costs are fixed per model (not per-token):
+ *   Mini models: 1 credit | Mid models: 3-8 credits
  */
 
 import { createOpenAI } from '@ai-sdk/openai';
@@ -33,14 +30,15 @@ export interface ManagedModelInfo {
   modelId: string;
   displayName: string;
   costPer1kTokens: number;
+  creditCost: number;
   tier: 'mini' | 'mid';
 }
 
 export interface ManagedCreditStatus {
   allowed: boolean;
-  used_usd: number;
-  cap_usd: number;
-  remaining_usd: number;
+  remaining: number;
+  limit: number;
+  used: number;
   tier: PlanTier;
   reason?: string;
 }
@@ -49,74 +47,73 @@ export interface ManagedCreditStatus {
 // MODEL REGISTRY
 // ============================================
 
-/**
- * All managed models with their cost and tier classification.
- * Costs are blended input/output per 1K tokens.
- */
 export const MANAGED_MODEL_REGISTRY: Record<string, ManagedModelInfo> = {
-  // Mini tier (available to Free + Pro)
   'gpt-5-mini': {
     provider: 'CHATGPT',
     modelId: 'gpt-5-mini',
     displayName: 'GPT-5 Mini',
-    costPer1kTokens: 0.00083,    // $0.25/$2 per MTok (2:1 blended)
+    costPer1kTokens: 0.00083,
+    creditCost: 1,
     tier: 'mini',
   },
   'gemini-2.5-flash': {
     provider: 'GEMINI',
     modelId: 'gemini-2.5-flash',
     displayName: 'Gemini 2.5 Flash',
-    costPer1kTokens: 0.0003,     // $0.15/$0.60 per MTok (2:1 blended)
+    costPer1kTokens: 0.0003,
+    creditCost: 1,
     tier: 'mini',
   },
   'claude-haiku-4-5': {
     provider: 'CLAUDE',
     modelId: 'claude-haiku-4-5',
     displayName: 'Claude Haiku 4.5',
-    costPer1kTokens: 0.00233,    // $1/$5 per MTok (2:1 blended)
+    costPer1kTokens: 0.00233,
+    creditCost: 1,
     tier: 'mini',
   },
   'meta-llama/llama-4-scout-17b-16e-instruct': {
     provider: 'GROQ',
     modelId: 'meta-llama/llama-4-scout-17b-16e-instruct',
     displayName: 'Llama 4 Scout (Groq)',
-    costPer1kTokens: 0.000187,   // $0.11/$0.34 per MTok (2:1 blended) — supports structured outputs
+    costPer1kTokens: 0.000187,
+    creditCost: 1,
     tier: 'mini',
   },
-  // Mid tier (Pro + Legacy only)
   'gpt-5': {
     provider: 'CHATGPT',
     modelId: 'gpt-5',
     displayName: 'GPT-5',
-    costPer1kTokens: 0.00417,    // $1.25/$10 per MTok (2:1 blended)
+    costPer1kTokens: 0.00417,
+    creditCost: 5,
     tier: 'mid',
   },
   'claude-sonnet-4-5': {
     provider: 'CLAUDE',
     modelId: 'claude-sonnet-4-5',
     displayName: 'Claude Sonnet 4.5',
-    costPer1kTokens: 0.007,      // $3/$15 per MTok (2:1 blended)
+    costPer1kTokens: 0.007,
+    creditCost: 8,
     tier: 'mid',
   },
   'gemini-2.5-pro': {
     provider: 'GEMINI',
     modelId: 'gemini-2.5-pro',
     displayName: 'Gemini 2.5 Pro',
-    costPer1kTokens: 0.00417,    // $1.25/$10 per MTok (2:1 blended)
+    costPer1kTokens: 0.00417,
+    creditCost: 5,
     tier: 'mid',
   },
   'meta-llama/llama-4-maverick-17b-128e-instruct': {
     provider: 'GROQ',
     modelId: 'meta-llama/llama-4-maverick-17b-128e-instruct',
     displayName: 'Llama 4 Maverick (Groq)',
-    costPer1kTokens: 0.000333,   // $0.20/$0.60 per MTok (2:1 blended) — supports structured outputs
+    costPer1kTokens: 0.000333,
+    creditCost: 3,
     tier: 'mid',
   },
 };
 
-/**
- * Models allowed per pricing tier
- */
 export const TIER_MODEL_ALLOWLIST: Record<PlanTier, string[]> = {
   free: [
     'gpt-5-mini',
@@ -146,35 +143,22 @@ export const TIER_MODEL_ALLOWLIST: Record<PlanTier, string[]> = {
   ],
 };
 
-/**
- * Default managed model per tier (cheapest efficient option)
- */
 export const DEFAULT_MANAGED_MODEL: Record<PlanTier, string> = {
   free: 'gemini-2.5-flash',
   pro: 'gpt-5-mini',
   legacy: 'gpt-5-mini',
 };
 
-/**
- * Managed credit caps per tier (USD/month)
- * 
- * Legacy users are grandfathered free users with unlimited BYOK access.
- * They use their own API keys — no managed credits needed.
- */
-export const MANAGED_CREDIT_CAPS: Record<PlanTier, number> = {
-  free: 0.015,   // ~50 queries on mini models
-  pro: 4.99,     // generous cap, mini + mid-tier
-  legacy: 0,     // legacy = free users grandfathered with unlimited BYOK, no managed credits
+export const MONTHLY_CREDIT_LIMITS: Record<PlanTier, number> = {
+  free: 100,
+  pro: 1000,
+  legacy: 0,
 };
 
 // ============================================
 // ENVIRONMENT KEYS
 // ============================================
 
-/**
- * Get managed API key for a provider from environment variables.
- * These are platform-owned keys, NOT user keys.
- */
 function getManagedApiKey(provider: AIProvider): string | null {
   switch (provider) {
     case 'CHATGPT':
@@ -194,23 +178,15 @@ function getManagedApiKey(provider: AIProvider): string | null {
 // CORE FUNCTIONS
 // ============================================
 
-/**
- * Check if a model is allowed for the given tier in managed mode.
- */
 export function isManagedModelAllowed(modelId: string, tier: PlanTier): boolean {
   const allowlist = TIER_MODEL_ALLOWLIST[tier];
   return allowlist?.includes(modelId) ?? false;
 }
 
-/**
- * Get a managed model instance using platform API keys.
- * Returns null if the model is not available or key is missing.
- */
 export function getManagedModel(
   modelId: string,
   tier: PlanTier
 ): { model: LanguageModel; provider: AIProvider; modelId: string } | null {
-  // Validate model is allowed for tier
   if (!isManagedModelAllowed(modelId, tier)) {
     return null;
   }
@@ -220,14 +196,12 @@ export function getManagedModel(
     return null;
   }
 
-  // Get platform API key for this provider
   const apiKey = getManagedApiKey(modelInfo.provider);
   if (!apiKey) {
     console.warn(`Managed API key not configured for provider: ${modelInfo.provider}`);
     return null;
   }
 
-  // Create model instance using platform key
   let model: LanguageModel;
   switch (modelInfo.provider) {
     case 'CHATGPT':
@@ -250,27 +224,29 @@ export function getManagedModel(
 }
 
 /**
- * Calculate the cost of a query based on actual token usage.
- * Returns cost in USD.
+ * Get the integer credit cost for a model.
+ * Returns the fixed per-query credit cost (not token-based).
+ */
+export function getModelCreditCost(modelId: string): number {
+  const modelInfo = MANAGED_MODEL_REGISTRY[modelId];
+  return modelInfo?.creditCost ?? 1;
+}
+
+/**
+ * @deprecated Use getModelCreditCost() for the new integer credit system.
+ * Kept for backward compatibility with existing agent routes during migration.
  */
 export function calculateQueryCost(
   modelId: string,
-  inputTokens: number,
-  outputTokens: number
+  _inputTokens: number,
+  _outputTokens: number
 ): number {
-  const modelInfo = MANAGED_MODEL_REGISTRY[modelId];
-  if (!modelInfo) {
-    // Fallback: use a conservative estimate
-    return ((inputTokens + outputTokens) / 1000) * 0.001;
-  }
-
-  const totalTokens = inputTokens + outputTokens;
-  return (totalTokens / 1000) * modelInfo.costPer1kTokens;
+  return getModelCreditCost(modelId);
 }
 
 /**
  * Check if a user can use managed credits.
- * Handles period auto-reset.
+ * Reads integer credits_balance and auto-resets if period expired.
  */
 export async function canUseManagedCredits(
   userIdOrEmail: string
@@ -278,66 +254,60 @@ export async function canUseManagedCredits(
   const isEmail = userIdOrEmail.includes('@');
 
   const [data] = isEmail
-    ? await sql`SELECT id, plan_tier, managed_credits_used_usd, managed_credits_cap_usd, managed_credits_reset_at FROM users WHERE email = ${userIdOrEmail}`
-    : await sql`SELECT id, plan_tier, managed_credits_used_usd, managed_credits_cap_usd, managed_credits_reset_at FROM users WHERE id = ${userIdOrEmail}`;
+    ? await sql`SELECT id, plan_tier, credits_balance, credits_reset_at FROM users WHERE email = ${userIdOrEmail}`
+    : await sql`SELECT id, plan_tier, credits_balance, credits_reset_at FROM users WHERE id = ${userIdOrEmail}`;
 
   if (!data) {
     return {
       allowed: false,
-      used_usd: 0,
-      cap_usd: 0,
-      remaining_usd: 0,
+      remaining: 0,
+      limit: 0,
+      used: 0,
       tier: 'free',
       reason: 'User not found',
     };
   }
 
   const tier = (data.plan_tier || 'free') as PlanTier;
-  let used = Number(data.managed_credits_used_usd) || 0;
-  const cap = Number(data.managed_credits_cap_usd) || MANAGED_CREDIT_CAPS[tier];
-  const resetAt = new Date(data.managed_credits_reset_at);
+  const limit = MONTHLY_CREDIT_LIMITS[tier];
+  let balance = Number(data.credits_balance) || 0;
+  const resetAt = data.credits_reset_at ? new Date(data.credits_reset_at) : null;
 
-  // Auto-reset if period expired
-  if (resetAt < new Date()) {
-    used = 0;
-    // Reset in DB (fire-and-forget, the DB function handles it atomically)
-      await sql`SELECT reset_managed_credits(${data.id})`;
+  if (resetAt && resetAt < new Date()) {
+    balance = limit;
+    await sql`SELECT reset_managed_credits(${data.id})`;
   }
 
-  const remaining = Math.max(0, cap - used);
-  const allowed = used < cap;
+  const used = Math.max(0, limit - balance);
+  const allowed = balance > 0 && limit > 0;
 
   return {
     allowed,
-    used_usd: used,
-    cap_usd: cap,
-    remaining_usd: remaining,
+    remaining: balance,
+    limit,
+    used,
     tier,
-    reason: allowed ? undefined : `Managed AI credits exhausted ($${cap.toFixed(2)}/month). Use your own API key for unlimited access, or upgrade to Pro.`,
+    reason: allowed ? undefined : `AI credits exhausted (${limit}/month). Use your own API key for unlimited access, or upgrade to Pro.`,
   };
 }
 
 /**
- * Debit managed credits after a query.
- * Returns the new used amount.
+ * Debit integer credits after a managed query.
+ * Returns the new remaining balance.
  */
 export async function debitManagedCredits(
   userId: string,
-  costUsd: number
+  credits: number
 ): Promise<number> {
   try {
-    const [result] = await sql`SELECT debit_managed_credits(${userId}, ${costUsd}) as new_used`;
-    return result?.new_used || 0;
+    const [result] = await sql`SELECT debit_managed_credits(${userId}, ${credits}::integer) as new_balance`;
+    return result?.new_balance ?? 0;
   } catch (error) {
     console.error('Failed to debit managed credits:', error);
     return -1;
   }
 }
 
-/**
- * Get the list of managed models available for a tier.
- * Used by frontend to populate model selector in managed mode.
- */
 export function getManagedModelsForTier(tier: PlanTier): ManagedModelInfo[] {
   const allowlist = TIER_MODEL_ALLOWLIST[tier] || TIER_MODEL_ALLOWLIST.free;
   return allowlist
