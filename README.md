@@ -18,6 +18,13 @@
   <a href="#contributing">Contributing</a>
 </p>
 
+<p align="center">
+  <a href="https://youtu.be/Fq99cD3xnAA">
+    <img src="https://img.youtube.com/vi/Fq99cD3xnAA/maxresdefault.jpg" alt="AISheeter Demo" width="600" />
+  </a>
+</p>
+<p align="center"><em>Watch the demo on YouTube</em></p>
+
 ---
 
 ## What is AISheeter?
